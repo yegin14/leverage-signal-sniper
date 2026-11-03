@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # --- TELEGRAM AYARLARI ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9079849201:AAEzlQDb1DDV3szn7LfF9n7TBMlr6NIYu2k")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9255550428:AAFUnIhge5_tWy0odDvtorm-xRWSWX_R2CI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # --- KASA VE RİSK YÖNETİMİ ($100 Bütçe) ---
