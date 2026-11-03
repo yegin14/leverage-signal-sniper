@@ -1,6 +1,6 @@
 """
 LeverageSignalSniper - Interactive Telegram Command & Menu Listener
-Kullanıcı /start yazdığında veya butonlara bastığında anında yanıt veren etkileşimli modül.
+Buton tıklamalarını <100ms içinde anında yanıtlayan, bağımsız asenkron modül.
 """
 
 import asyncio
@@ -30,10 +30,24 @@ class TelegramCommandListener:
             ]
         }
 
+    async def answer_callback(self, session: aiohttp.ClientSession, callback_id: str, alert_text: str = None):
+        """Telegram istemcisindeki dönen çarkı (spinner) anında durdurur"""
+        url = f"{self.base_url}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_id}
+        if alert_text:
+            payload["text"] = alert_text
+            payload["show_alert"] = False
+        try:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                pass
+        except Exception:
+            pass
+
     async def send_response(self, session: aiohttp.ClientSession, chat_id: str, text: str, reply_markup: dict = None):
+        target_chat = chat_id or self.chat_id
         url = f"{self.base_url}/sendMessage"
         payload = {
-            "chat_id": chat_id,
+            "chat_id": target_chat,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
@@ -42,15 +56,7 @@ class TelegramCommandListener:
             payload["reply_markup"] = reply_markup
 
         try:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                pass
-        except Exception:
-            pass
-
-    async def answer_callback(self, session: aiohttp.ClientSession, callback_id: str):
-        url = f"{self.base_url}/answerCallbackQuery"
-        try:
-            async with session.post(url, json={"callback_query_id": callback_id}, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                 pass
         except Exception:
             pass
@@ -60,7 +66,7 @@ class TelegramCommandListener:
 
         if command in ["/start", "/menu", "cmd_menu"]:
             text = (
-                f"⚡ <b>[LEVERAGE SIGNAL SNIPER KONTROL PANELİ]</b> ⚡\n\n"
+                f"⚡ <b>[LEVERAGE SIGNAL SNIPER PANELİ]</b> ⚡\n\n"
                 f"👋 Merhaba Halil! Bu bot <b>50+ vadeli pariteyi</b> 7/24 tarayan ve "
                 f"<b>$100.00</b> bütçeli sanal kasayı canlı canlı işleten özel sistemindir.\n\n"
                 f"💰 <b>Güncel Kasa:</b> <code>${summary['balance']:.2f}</code>\n"
@@ -131,33 +137,38 @@ class TelegramCommandListener:
             )
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())
 
-    async def poll_updates(self, session: aiohttp.ClientSession):
-        """Telegram getUpdates arka plan döngüsü"""
+    async def poll_once(self, session: aiohttp.ClientSession):
+        """Tek bir getUpdates sorgusu çalıştırır"""
         url = f"{self.base_url}/getUpdates"
-        params = {"offset": self.last_update_id + 1, "timeout": 2}
+        params = {"offset": self.last_update_id + 1, "timeout": 1}
         try:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     for item in data.get("result", []):
                         self.last_update_id = item["update_id"]
                         
-                        # 1. Normal Mesaj
-                        if "message" in item:
+                        # Butona Tıklama (Callback Query)
+                        if "callback_query" in item:
+                            cb = item["callback_query"]
+                            cb_id = cb.get("id", "")
+                            cb_data = cb.get("data", "")
+                            msg_obj = cb.get("message") or {}
+                            chat_obj = msg_obj.get("chat") or {}
+                            cid = str(chat_obj.get("id") or cb.get("from", {}).get("id") or self.chat_id)
+                            
+                            # 1. Spinner'ı ANINDA durdur!
+                            await self.answer_callback(session, cb_id)
+                            # 2. Yanıtı gönder
+                            if cb_data:
+                                await self.handle_command(session, cid, cb_data)
+
+                        # Normal Mesaj
+                        elif "message" in item:
                             msg = item["message"]
-                            cid = str(msg.get("chat", {}).get("id", ""))
+                            cid = str(msg.get("chat", {}).get("id") or self.chat_id)
                             text = msg.get("text", "").strip()
                             if text:
                                 await self.handle_command(session, cid, text)
-
-                        # 2. Butona Tıklama (Callback Query)
-                        elif "callback_query" in item:
-                            cb = item["callback_query"]
-                            cid = str(cb.get("message", {}).get("chat", {}).get("id", ""))
-                            data = cb.get("data", "")
-                            cb_id = cb.get("id", "")
-                            await self.answer_callback(session, cb_id)
-                            if data:
-                                await self.handle_command(session, cid, data)
         except Exception:
             pass

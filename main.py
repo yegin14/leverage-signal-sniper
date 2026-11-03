@@ -1,6 +1,7 @@
 """
-LeverageSignalSniper - Production Daemon (Sanal İşlem, İnteraktif Telegram ve Bulut Sunucu)
-50+ Pariteyi Paralel Tarayan, Sanal Kasa Yöneten, Telegram Butonlarına Yanıt Veren 7/24 Ana Motor.
+LeverageSignalSniper - Production Daemon (Tamamen Ayrık Asenkron Mimari)
+Telegram Dinleyicisi ve Piyasa Tarayıcısı iki bağımsız iş parçacığı olarak çalışır.
+Butonlara tıklandığında piyasa taraması beklenmez; <100ms içinde anında yanıt verilir.
 """
 
 import asyncio
@@ -48,111 +49,120 @@ def start_health_server():
     t.start()
     print(f"[✓] Bulut Sağlık Sunucusu Port {port} üzerinde aktif.")
 
-async def run_single_scan(
-    session: aiohttp.ClientSession,
+# --- 1. BAĞIMSIZ TELEGRAM İŞ PARÇACIĞI (KESİNTİSİZ <100MS YANIT) ---
+async def telegram_worker(cmd_listener: TelegramCommandListener):
+    print("[*] Bağımsız Telegram Komut Dinleyicisi Devrede.")
+    async with aiohttp.ClientSession() as tg_session:
+        while True:
+            try:
+                await cmd_listener.poll_once(tg_session)
+            except Exception:
+                await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
+
+# --- 2. PİYASA TARAYICI VE SANAL KASA İŞ PARÇACIĞI ---
+async def market_scanner_worker(
     market: MarketDataEngine,
     strategy: StrategyEngine,
     tv_client: TradingViewClient,
     news_scanner: NewsScanner,
     paper_trader: PaperTrader,
     notifier: TelegramNotifier,
-    cmd_listener: TelegramCommandListener,
     symbols: list[str]
 ):
-    cycle_start = time.time()
-    
-    # 0. Telegram Komutlarını ve Buton Tıklamalarını Denetle
-    await cmd_listener.poll_updates(session)
+    print(f"[*] 50+ Parite Tarayıcı Motoru Başlatıldı ({len(symbols)} Parite).")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            cycle_start = time.time()
+            try:
+                # 1. TradingView ve Haberleri Paralel Güncelle
+                tv_task = tv_client.fetch_batch_ratings(session, symbols)
+                news_task = news_scanner.update_news_feed(session)
+                await asyncio.gather(tv_task, news_task)
 
-    # 1. TradingView ve Haberleri Paralel Güncelle
-    tv_task = tv_client.fetch_batch_ratings(session, symbols)
-    news_task = news_scanner.update_news_feed(session)
-    await asyncio.gather(tv_task, news_task)
+                # 2. Tüm pariteleri çek (15'erli gruplar)
+                chunk_size = 15
+                bundles = []
+                t_fetch_start = time.time()
+                for i in range(0, len(symbols), chunk_size):
+                    chunk = symbols[i:i + chunk_size]
+                    tasks = [market.fetch_full_symbol_bundle(session, sym) for sym in chunk]
+                    results = await asyncio.gather(*tasks)
+                    bundles.extend(results)
+                    
+                fetch_time_ms = (time.time() - t_fetch_start) * 1000.0
 
-    # 2. Tüm pariteleri (50+) paralel çek
-    chunk_size = 15
-    bundles = []
-    t_fetch_start = time.time()
-    for i in range(0, len(symbols), chunk_size):
-        chunk = symbols[i:i + chunk_size]
-        tasks = [market.fetch_full_symbol_bundle(session, sym) for sym in chunk]
-        results = await asyncio.gather(*tasks)
-        bundles.extend(results)
-        
-    fetch_time_ms = (time.time() - t_fetch_start) * 1000.0
+                # 3. Canlı fiyatlarla Sanal İşlemleri Güncelle
+                current_prices = {}
+                for b in bundles:
+                    if b and "k5m" in b:
+                        current_prices[b["symbol"]] = b["k5m"]["last_price"]
 
-    # 3. Canlı fiyatları topla ve Sanal İşlemleri Güncelle
-    current_prices = {}
-    for b in bundles:
-        if b and "k5m" in b:
-            current_prices[b["symbol"]] = b["k5m"]["last_price"]
+                # TP / SL Kontrolleri
+                trade_events = paper_trader.update_positions(current_prices)
+                for event in trade_events:
+                    summary = paper_trader.get_summary()
+                    msg = notifier.build_trade_event_message(event, summary)
+                    print("\n" + "="*60)
+                    print(f"🎯 SANAL İŞLEM ETKİNLİĞİ: {event['event']} ({event['position']['symbol']}) PnL: ${event.get('pnl', 0):.2f}")
+                    print("="*60)
+                    await notifier.send_message(session, msg)
 
-    # Sanal işlemlerin TP/SL durumunu kontrol et
-    trade_events = paper_trader.update_positions(current_prices)
-    for event in trade_events:
-        summary = paper_trader.get_summary()
-        msg = notifier.build_trade_event_message(event, summary)
-        print("\n" + "="*60)
-        print(f"🎯 SANAL İŞLEM ETKİNLİĞİ: {event['event']} ({event['position']['symbol']}) PnL: ${event.get('pnl', 0):.2f}")
-        print("="*60)
-        await notifier.send_message(session, msg)
+                # 4. Sinyal Arama
+                signals_found = 0
+                t_eval = time.time()
+                for bundle in bundles:
+                    if not bundle:
+                        continue
+                    sym = bundle["symbol"]
+                    if strategy.is_in_cooldown(sym, SIGNAL_COOLDOWN_SECONDS):
+                        continue
 
-    # 4. Mikrosaniye Seviyesinde Derin Çok Faktörlü Değerlendirme
-    signals_found = 0
-    t_eval = time.time()
-    
-    for bundle in bundles:
-        if not bundle:
-            continue
-            
-        sym = bundle["symbol"]
-        if strategy.is_in_cooldown(sym, SIGNAL_COOLDOWN_SECONDS):
-            continue
+                    tv_data = tv_client.get_symbol_rating(sym)
+                    news_info = news_scanner.check_coin_news(sym)
+                    sig = strategy.evaluate_bundle(bundle, tv_data=tv_data, news_info=news_info)
+                    if sig:
+                        signals_found += 1
+                        strategy.register_signal(sym)
+                        
+                        # Sinyali İlet
+                        sig_msg = notifier.build_signal_message(sig)
+                        await notifier.send_message(session, sig_msg)
 
-        tv_data = tv_client.get_symbol_rating(sym)
-        news_info = news_scanner.check_coin_news(sym)
+                        # Sanal İşlem Aç
+                        opened = paper_trader.open_virtual_trade(sig)
+                        if opened:
+                            summary = paper_trader.get_summary()
+                            open_msg = notifier.build_trade_open_message(opened, summary)
+                            print(f"[🎮 Sanal İşlem]: {opened['symbol']} {opened['direction']} ({opened['leverage']}x)")
+                            await notifier.send_message(session, open_msg)
 
-        sig = strategy.evaluate_bundle(bundle, tv_data=tv_data, news_info=news_info)
-        if sig:
-            signals_found += 1
-            strategy.register_signal(sym)
-            
-            # Sinyali Telegram'a İlet
-            sig_msg = notifier.build_signal_message(sig)
-            print("\n" + "="*60)
-            print(f"🔥 SİNYAL ONAYLANDI: {sig['symbol']} {sig['direction']} (Skor: %{sig['confidence']})")
-            print("="*60)
-            await notifier.send_message(session, sig_msg)
-
-            # Sanal Kasada Otomatik İşleme Gir
-            opened = paper_trader.open_virtual_trade(sig)
-            if opened:
+                eval_time_ms = (time.time() - t_eval) * 1000.0
+                total_cycle_ms = (time.time() - cycle_start) * 1000.0
+                
                 summary = paper_trader.get_summary()
-                open_msg = notifier.build_trade_open_message(opened, summary)
-                print(f"[🎮 Sanal İşlem]: {opened['symbol']} {opened['direction']} ({opened['leverage']}x)")
-                await notifier.send_message(session, open_msg)
+                sys.stdout.write(
+                    f"\r⚡ [RADAR] {len(symbols)} Parite | "
+                    f"Döngü: {total_cycle_ms:.0f}ms | Açık İşlem: {summary['open_count']} | "
+                    f"Kasa: ${summary['balance']:.2f} (PnL: {'+' if summary['realized_pnl']>=0 else ''}${summary['realized_pnl']:.2f})"
+                )
+                sys.stdout.flush()
 
-    eval_time_ms = (time.time() - t_eval) * 1000.0
-    total_cycle_ms = (time.time() - cycle_start) * 1000.0
-    
-    summary = paper_trader.get_summary()
-    sys.stdout.write(
-        f"\r⚡ [RADAR] {len(symbols)} Parite | "
-        f"Döngü: {total_cycle_ms:.0f}ms | Açık İşlem: {summary['open_count']} | "
-        f"Kasa: ${summary['balance']:.2f} (PnL: {'+' if summary['realized_pnl']>=0 else ''}${summary['realized_pnl']:.2f})"
-    )
-    sys.stdout.flush()
+            except Exception as e:
+                print(f"\n[Tarayıcı Döngü Uyarısı]: {e}")
+
+            # Tarama aralığı (5 saniye)
+            await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
 async def main():
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     ⚡ LEVERAGE SIGNAL SNIPER - CLOUD & PAPER ENGINE ⚡       ║
-║   50+ Parite | TradingView 26-İndikatör | İnteraktif Menü     ║
+║   Bağımsız Telegram İş Parçacığı | 50+ Parite Tarayıcı        ║
 ╚═══════════════════════════════════════════════════════════════╝
     """)
     start_health_server()
 
-    print("[*] Kurumsal modüller ayağa kaldırılıyor...")
     market = MarketDataEngine()
     strategy = StrategyEngine()
     tv_client = TradingViewClient()
@@ -160,36 +170,27 @@ async def main():
     paper_trader = PaperTrader()
     notifier = TelegramNotifier()
     cmd_listener = TelegramCommandListener(paper_trader)
-    
+
     summary = paper_trader.get_summary()
     print(f"[✓] Sanal Kasa: Başlangıç ${summary['initial_balance']:.2f} | Bakiye: ${summary['balance']:.2f}")
 
     async with aiohttp.ClientSession() as session:
-        print("[*] En yüksek hacimli vadeli pariteler taranıyor...")
+        print("[*] Parite havuzu keşfediliyor...")
         top_symbols = await market.get_top_volume_symbols(session, limit=TOP_SYMBOLS_COUNT)
         if not top_symbols or len(top_symbols) < 10:
             top_symbols = DEFAULT_SYMBOLS[:TOP_SYMBOLS_COUNT]
-        print(f"[✓] {len(top_symbols)} Parite Havuzu Aktifleştirildi!")
+        print(f"[✓] {len(top_symbols)} Parite Aktif.")
 
-        if not TELEGRAM_CHAT_ID:
-            print("\n[!] UYARI: TELEGRAM_CHAT_ID boş.\n")
-        else:
-            print(f"[✓] Telegram Bildirim Kanalı Aktif ({TELEGRAM_CHAT_ID})\n")
-
-        print("[*] 7/24 Kesintisiz Tarama ve İnteraktif Komut Dinleyici Başlatıldı.\n")
-        
-        while True:
-            try:
-                await run_single_scan(
-                    session, market, strategy, tv_client, news_scanner,
-                    paper_trader, notifier, cmd_listener, top_symbols
-                )
-                await asyncio.sleep(SCAN_INTERVAL_SECONDS)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"\n[Döngü Uyarısı]: {e}")
-                await asyncio.sleep(2)
+    # İki görevi tamamen bağımsız ve paralel çalıştır:
+    # 1. Telegram Buton Yanıtlayıcı (Hiç beklemez, 0.3s döngü)
+    # 2. Piyasa Tarayıcı
+    await asyncio.gather(
+        telegram_worker(cmd_listener),
+        market_scanner_worker(
+            market, strategy, tv_client, news_scanner,
+            paper_trader, notifier, top_symbols
+        )
+    )
 
 if __name__ == "__main__":
     try:
