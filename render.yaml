@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: leverage-signal-sniper
+    runtime: docker
+    region: virginia
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: ACCOUNT_SIZE_USD
+        value: "100.0"
+      - key: MAX_RISK_PER_TRADE_USD
+        value: "2.0"
+      - key: TOP_SYMBOLS_COUNT
+        value: "50"
+      - key: SCAN_INTERVAL_SECONDS
+        value: "3.0"
+      - key: TELEGRAM_BOT_TOKEN
+        value: "9079849201:AAEzlQDb1DDV3szn7LfF9n7TBMlr6NIYu2k"
+      - key: TELEGRAM_CHAT_ID
+        sync: false
