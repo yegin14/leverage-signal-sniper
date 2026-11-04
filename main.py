@@ -54,6 +54,14 @@ DIAG = {
 # --- BULUT SUNUCULAR İÇİN HEALTH-CHECK SUNUCUSU ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/reset"):
+            if GLOBAL_PAPER_TRADER:
+                GLOBAL_PAPER_TRADER.reset_state(1000.0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok", "message": "paper trading reset to $1,000.00"}')
+            return
         if self.path.startswith("/status"):
             resp_data = dict(DIAG)
             if GLOBAL_PAPER_TRADER:

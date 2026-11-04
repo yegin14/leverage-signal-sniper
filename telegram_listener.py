@@ -149,6 +149,17 @@ class TelegramCommandListener:
             )
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())
 
+        elif command in ["/sifirla", "/reset", "cmd_reset"]:
+            self.paper_trader.reset_state(1000.0)
+            text = (
+                "🔄 <b>[SANAL KASA SIFIRLANDI!]</b> 🔄\n\n"
+                "💰 <b>Yeni Kasa Bakiyesi:</b> <code>$1,000.00</code>\n"
+                "🛡️ <b>İşlem Başına Risk:</b> Sabit $20.00 (%2.0)\n"
+                "🎯 <b>Hedef Kâr (TP1):</b> +$30.00 (+1.5R)\n\n"
+                "✨ <i>Tüm geçmiş işlemler, kazanç ve kayıplar sıfırlandı. Temiz sayfa ile başlandı!</i>"
+            )
+            await self.send_response(session, chat_id, text, self.get_menu_keyboard())
+
     async def poll_once(self, session: aiohttp.ClientSession):
         url = f"{self.base_url}/getUpdates"
         params = {"offset": self.last_update_id + 1, "timeout": 1}

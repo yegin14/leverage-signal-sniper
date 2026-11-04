@@ -32,7 +32,11 @@ class PaperTrader:
             try:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    self.state.update(loaded)
+                if loaded.get("initial_balance", 0) != self.initial_balance:
+                    print(f"[PaperTrader] Kasa boyutu değişti ({loaded.get('initial_balance')} -> {self.initial_balance}). Kasa sıfırlanıyor...")
+                    self.reset_state(self.initial_balance)
+                    return
+                self.state.update(loaded)
 
                 # Saf Kripto Temizliği: Eski oturumdan kalan Altın ve hisse pozisyonlarının teminatını iade et
                 non_crypto = [s for s in list(self.state.get("open_positions", {}).keys()) if s in ("XAUUSDT", "SPCXUSDT", "SOXLUSDT", "CLUSDT")]
@@ -42,6 +46,7 @@ class PaperTrader:
                     print(f"[PaperTrader] Kripto dışı sembol tasfiye edildi ve teminat iade edildi: {s}")
                 if non_crypto:
                     self.save_state()
+                self.initial_balance = self.state.get("initial_balance", self.initial_balance)
             except Exception as e:
                 print(f"[PaperTrader] State yüklenirken hata: {e}")
 
@@ -51,6 +56,22 @@ class PaperTrader:
                 json.dump(self.state, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[PaperTrader] State kaydedilirken hata: {e}")
+
+    def reset_state(self, new_balance: float = ACCOUNT_SIZE_USD):
+        """Kasa bakiyesini, işlemleri ve tüm geçmişi sıfırlar."""
+        self.initial_balance = new_balance
+        self.state = {
+            "initial_balance": new_balance,
+            "balance": new_balance,
+            "realized_pnl": 0.0,
+            "total_trades": 0,
+            "win_trades": 0,
+            "loss_trades": 0,
+            "open_positions": {},
+            "history": []
+        }
+        self.save_state()
+        print(f"[PaperTrader] Kasa tamamen sıfırlandı! Yeni Bakiye: ${new_balance:,.2f}")
 
     def get_summary(self) -> dict:
         total = self.state["total_trades"]

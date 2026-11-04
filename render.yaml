@@ -9,9 +9,9 @@ services:
       - key: PORT
         value: "8080"
       - key: ACCOUNT_SIZE_USD
-        value: "100.0"
+        value: "1000.0"
       - key: MAX_RISK_PER_TRADE_USD
-        value: "2.0"
+        value: "20.0"
       - key: TOP_SYMBOLS_COUNT
         value: "50"
       - key: SCAN_INTERVAL_SECONDS

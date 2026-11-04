@@ -214,11 +214,11 @@ class StrategyEngine:
 
         sl_distance_pct = (actual_distance / current_price) * 100.0
 
-        # --- 3. KASA YÖNETİMİ VE MATEMATİKSEL RİSK KALKANI ($2.00 SABİT ZARAR) ---
+        # --- 3. KASA YÖNETİMİ VE MATEMATİKSEL RİSK KALKANI (%2 SABİT RİSK) ---
         target_position_usd = MAX_RISK_PER_TRADE_USD / (sl_distance_pct / 100.0)
         
         # İdeal kaldıraç: Stop mesafesine göre dinamik (Örn: %1.5 stop -> 7x-10x)
-        ideal_margin_usd = min(ACCOUNT_SIZE_USD * 0.20, 20.0)
+        ideal_margin_usd = min(ACCOUNT_SIZE_USD * 0.20, 200.0)
         raw_leverage = target_position_usd / ideal_margin_usd
         recommended_leverage = int(np.clip(raw_leverage, MIN_ALLOWED_LEVERAGE, MAX_ALLOWED_LEVERAGE))
         actual_margin_needed = target_position_usd / recommended_leverage
@@ -239,7 +239,7 @@ class StrategyEngine:
             "target_position_usd": target_position_usd,
             "margin_needed_usd": actual_margin_needed,
             "max_risk_usd": MAX_RISK_PER_TRADE_USD,
-            "tp1_profit_usd": MAX_RISK_PER_TRADE_USD * 1.5,  # $3.00 Net Kâr
+            "tp1_profit_usd": MAX_RISK_PER_TRADE_USD * 1.5,  # +1.5R Net Kâr ($30.00)
             "tp2_profit_usd": MAX_RISK_PER_TRADE_USD * 2.5,
             "tp3_profit_usd": MAX_RISK_PER_TRADE_USD * 4.0,
             "reasons": reasons,

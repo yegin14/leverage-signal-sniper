@@ -13,9 +13,9 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9255550428:AAFUnIhge5_tWy0odDvtorm-xRWSWX_R2CI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# --- KASA VE RİSK YÖNETİMİ ($100 Bütçe) ---
-ACCOUNT_SIZE_USD = float(os.getenv("ACCOUNT_SIZE_USD", "100.0"))
-MAX_RISK_PER_TRADE_USD = float(os.getenv("MAX_RISK_PER_TRADE_USD", "2.0"))  # %2 Sabit Risk
+# --- KASA VE RİSK YÖNETİMİ ($1,000 Bütçe) ---
+ACCOUNT_SIZE_USD = float(os.getenv("ACCOUNT_SIZE_USD", "1000.0"))
+MAX_RISK_PER_TRADE_USD = float(os.getenv("MAX_RISK_PER_TRADE_USD", "20.0"))  # %2 Sabit Risk ($20)
 MAX_ALLOWED_LEVERAGE = int(os.getenv("MAX_ALLOWED_LEVERAGE", "20"))
 MIN_ALLOWED_LEVERAGE = int(os.getenv("MIN_ALLOWED_LEVERAGE", "3"))
 
