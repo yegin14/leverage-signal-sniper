@@ -1,7 +1,7 @@
 """
-LeverageSignalSniper - Production Daemon (Tamamen Ayrık Asenkron Mimari)
-Telegram Dinleyicisi ve Piyasa Tarayıcısı iki bağımsız iş parçacığı olarak çalışır.
-Butonlara tıklandığında piyasa taraması beklenmez; <100ms içinde anında yanıt verilir.
+LeverageSignalSniper - Production Daemon (7/24 Kesintisiz & Uyanık Kalkanı)
+Render ücretsiz planının uykuya dalmasını (idle shutdown) engelleyen self-pinger,
+bağımsız Telegram iş parçacığı ve 50 parite tarayıcısı içerir.
 """
 
 import asyncio
@@ -31,6 +31,8 @@ from paper_trader import PaperTrader
 from telegram_notifier import TelegramNotifier
 from telegram_listener import TelegramCommandListener
 
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://leverage-signal-sniper.onrender.com").strip().rstrip("/")
+
 # --- BULUT SUNUCULAR İÇİN HEALTH-CHECK SUNUCUSU ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -49,7 +51,42 @@ def start_health_server():
     t.start()
     print(f"[✓] Bulut Sağlık Sunucusu Port {port} üzerinde aktif.")
 
-# --- 1. BAĞIMSIZ TELEGRAM İŞ PARÇACIĞI (KESİNTİSİZ <100MS YANIT) ---
+# --- 1. 7/24 UYANIK TUTMA MOTORU (RENDER UYKU ENGELLEYİCİ) ---
+async def keep_awake_worker():
+    """Render'ın 15 dakikalık boşta kalma uykusunu her 4 dakikada bir kendini pingleyerek engeller"""
+    print(f"[*] 24/7 Keep-Awake Kalkanı Aktif: {RENDER_EXTERNAL_URL}")
+    await asyncio.sleep(60)  # İlk başlatmadan 1 dakika sonra başla
+    async with aiohttp.ClientSession() as s:
+        while True:
+            try:
+                async with s.get(f"{RENDER_EXTERNAL_URL}/", timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(240)  # Her 4 dakikada bir ping (<15 dk sınır)
+
+# --- 2. PERİYODİK NABIZ / KALBİN ÇARPIŞI RAPORU ---
+async def heartbeat_worker(notifier: TelegramNotifier, paper_trader: PaperTrader):
+    """Kullanıcının aklında soru işareti kalmaması için 4 saatte bir Telegram'a durum raporu atar"""
+    while True:
+        await asyncio.sleep(14400)  # 4 Saatte bir
+        try:
+            summary = paper_trader.get_summary()
+            text = (
+                f"💓 <b>[7/24 RADAR DURUM RAPORU]</b> 💓\n\n"
+                f"🤖 Bot kesintisiz olarak 50+ vadeli pariteyi taramaya devam ediyor.\n\n"
+                f"💼 <b>Sanal Kasa:</b> <code>${summary['balance']:.2f}</code>\n"
+                f"🎯 <b>Açık İşlem:</b> {summary['open_count']} adet\n"
+                f"📈 <b>Toplam PnL:</b> {'+' if summary['realized_pnl']>=0 else ''}${summary['realized_pnl']:.2f}\n"
+                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Virginia (Uyanık & Aktif)\n\n"
+                f"<i>Kriterlere (%80+ güven, RVOL>1.7x balina hacmi) uyan sinyal oluştuğunda anında açılacaktır.</i>"
+            )
+            async with aiohttp.ClientSession() as s:
+                await notifier.send_message(s, text)
+        except Exception:
+            pass
+
+# --- 3. BAĞIMSIZ TELEGRAM İŞ PARÇACIĞI (KESİNTİSİZ <100MS YANIT) ---
 async def telegram_worker(cmd_listener: TelegramCommandListener):
     print("[*] Bağımsız Telegram Komut Dinleyicisi Devrede.")
     async with aiohttp.ClientSession() as tg_session:
@@ -60,7 +97,7 @@ async def telegram_worker(cmd_listener: TelegramCommandListener):
                 await asyncio.sleep(1)
             await asyncio.sleep(0.3)
 
-# --- 2. PİYASA TARAYICI VE SANAL KASA İŞ PARÇACIĞI ---
+# --- 4. PİYASA TARAYICI VE SANAL KASA İŞ PARÇACIĞI ---
 async def market_scanner_worker(
     market: MarketDataEngine,
     strategy: StrategyEngine,
@@ -151,14 +188,13 @@ async def market_scanner_worker(
             except Exception as e:
                 print(f"\n[Tarayıcı Döngü Uyarısı]: {e}")
 
-            # Tarama aralığı (5 saniye)
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
 async def main():
     print("""
 ╔═══════════════════════════════════════════════════════════════╗
 ║     ⚡ LEVERAGE SIGNAL SNIPER - CLOUD & PAPER ENGINE ⚡       ║
-║   Bağımsız Telegram İş Parçacığı | 50+ Parite Tarayıcı        ║
+║   24/7 Keep-Awake | Bağımsız Telegram | 50+ Parite Tarayıcı  ║
 ╚═══════════════════════════════════════════════════════════════╝
     """)
     start_health_server()
@@ -181,15 +217,19 @@ async def main():
             top_symbols = DEFAULT_SYMBOLS[:TOP_SYMBOLS_COUNT]
         print(f"[✓] {len(top_symbols)} Parite Aktif.")
 
-    # İki görevi tamamen bağımsız ve paralel çalıştır:
-    # 1. Telegram Buton Yanıtlayıcı (Hiç beklemez, 0.3s döngü)
-    # 2. Piyasa Tarayıcı
+    # 4 Bağımsız Görevi Paralel Çalıştır:
+    # 1. Telegram Buton Yanıtlayıcı
+    # 2. Piyasa Tarayıcısı
+    # 3. 24/7 Uyanık Tutma (Keep-Awake Pinger)
+    # 4. Periyodik Nabız / Rapor Gönderici
     await asyncio.gather(
         telegram_worker(cmd_listener),
         market_scanner_worker(
             market, strategy, tv_client, news_scanner,
             paper_trader, notifier, top_symbols
-        )
+        ),
+        keep_awake_worker(),
+        heartbeat_worker(notifier, paper_trader)
     )
 
 if __name__ == "__main__":

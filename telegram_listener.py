@@ -31,7 +31,6 @@ class TelegramCommandListener:
         }
 
     async def answer_callback(self, session: aiohttp.ClientSession, callback_id: str, alert_text: str = None):
-        """Telegram istemcisindeki dönen çarkı (spinner) anında durdurur"""
         url = f"{self.base_url}/answerCallbackQuery"
         payload = {"callback_query_id": callback_id}
         if alert_text:
@@ -64,15 +63,19 @@ class TelegramCommandListener:
     async def handle_command(self, session: aiohttp.ClientSession, chat_id: str, command: str):
         summary = self.paper_trader.get_summary()
 
-        if command in ["/start", "/menu", "cmd_menu"]:
+        if command in ["/start", "/menu", "/durum", "cmd_menu"]:
+            pnl_sign = "+" if summary["realized_pnl"] >= 0 else ""
+            open_count = summary["open_count"]
+            status_desc = f"{open_count} adet pozisyonda" if open_count > 0 else "Pusuda bekleniyor (Sinyal aranıyor)"
             text = (
-                f"⚡ <b>[LEVERAGE SIGNAL SNIPER PANELİ]</b> ⚡\n\n"
-                f"👋 Merhaba Halil! Bu bot <b>50+ vadeli pariteyi</b> 7/24 tarayan ve "
-                f"<b>$100.00</b> bütçeli sanal kasayı canlı canlı işleten özel sistemindir.\n\n"
-                f"💰 <b>Güncel Kasa:</b> <code>${summary['balance']:.2f}</code>\n"
-                f"⏳ <b>Açık İşlem:</b> {summary['open_count']} adet\n"
-                f"📈 <b>Net Kâr:</b> {'+' if summary['realized_pnl'] >= 0 else ''}${summary['realized_pnl']:.2f} (%{summary['return_pct']:.1f})\n\n"
-                f"Aşağıdaki menü butonlarını kullanarak sistemi anlık sorgulayabilirsin:"
+                f"⚡ <b>[LEVERAGE SIGNAL SNIPER KONTROL PANELİ]</b> ⚡\n\n"
+                f"👋 Merhaba Halil! Bot 7/24 kesintisiz uyanık ve aktiftir.\n\n"
+                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Virginia (Uyanık Kalkanı Devrede)\n"
+                f"📊 <b>Tarama Havuzu:</b> 50+ Vadeli Parite (Binance Futures)\n"
+                f"💰 <b>Sanal Kasa Bakiyesi:</b> <code>${summary['balance']:.2f}</code>\n"
+                f"⏳ <b>Açık İşlem Durumu:</b> {status_desc}\n"
+                f"📈 <b>Toplam Net PnL:</b> {pnl_sign}${summary['realized_pnl']:.2f} (%{summary['return_pct']:.1f})\n\n"
+                f"👇 <b>Aşağıdaki butonlara tıklayarak sistemi sorgulayabilirsin:</b>"
             )
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())
 
@@ -94,8 +97,11 @@ class TelegramCommandListener:
             if not open_pos:
                 text = (
                     f"🎯 <b>[AÇIK İŞLEM DURUMU]</b>\n\n"
-                    f"Şu anda açıkta bekleyen pozisyon yok.\n"
-                    f"Radar 50+ pariteyi tarıyor; %80+ güvenli sinyal geldiğinde otomatik açılacaktır."
+                    f"🟢 <b>Şu an açıkta bekleyen pozisyon YOK.</b>\n\n"
+                    f"🔍 <b>Neden İşlem Yok?</b>\n"
+                    f"Bot parayı korumak için sadece <b>%80+ Güven Skoru</b> ve <b>RVOL > 1.7x balina hacmi</b> gördüğünde girer. "
+                    f"Şu anki piyasada bu şartlar oluşmadığı için paran güvende tutuluyor.\n\n"
+                    f"📡 50+ parite saniyelik taranıyor; kırılım olduğunda otomatik açılacak ve sana bildirim gelecektir."
                 )
             else:
                 lines = []
@@ -114,15 +120,16 @@ class TelegramCommandListener:
         elif command in ["/radar", "cmd_radar"]:
             text = (
                 f"⚡ <b>[CANLI RADAR MOTORU BİLGİSİ]</b> ⚡\n\n"
-                f"🌐 <b>Sunucu:</b> Render Virginia (US-East) 7/24 Aktif\n"
+                f"🌐 <b>Sunucu:</b> Render Virginia (US-East) 7/24 Kesintisiz\n"
                 f"📡 <b>Hız:</b> ~1.2 saniye / 50 parite (Sub-second)\n"
-                f"🔍 <b>Filtreler:</b>\n"
+                f"🛡️ <b>Keep-Awake Kalkanı:</b> Devrede (Uykuya asla dalmaz)\n\n"
+                f"🔍 <b>Aktif Doğrulama Süzgeçleri:</b>\n"
                 f"  ✓ 15D Makro EMA Trend Uyumu\n"
-                f"  ✓ 5D RVOL Hacim Patlaması (>1.7x)\n"
+                f"  ✓ 5D RVOL Hacim Patlaması (>1.7x Balina Girişi)\n"
                 f"  ✓ TradingView 26-İndikatör Konsensüsü (GÜÇLÜ AL/SAT)\n"
                 f"  ✓ Elit Balina Pozisyon Teyidi (>%58)\n"
                 f"  ✓ Flaş Haber & Kriz Kalkanı (Cointelegraph)\n\n"
-                f"🛡️ <i>Sistem her saniye piyasayı analiz etmeye devam ediyor.</i>"
+                f"🎯 <i>Piyasa yapıcılar tahtayı kırdığı anda bildirim telefonuna düşecektir.</i>"
             )
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())
 
@@ -138,7 +145,6 @@ class TelegramCommandListener:
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())
 
     async def poll_once(self, session: aiohttp.ClientSession):
-        """Tek bir getUpdates sorgusu çalıştırır"""
         url = f"{self.base_url}/getUpdates"
         params = {"offset": self.last_update_id + 1, "timeout": 1}
         try:
@@ -148,7 +154,6 @@ class TelegramCommandListener:
                     for item in data.get("result", []):
                         self.last_update_id = item["update_id"]
                         
-                        # Butona Tıklama (Callback Query)
                         if "callback_query" in item:
                             cb = item["callback_query"]
                             cb_id = cb.get("id", "")
@@ -157,13 +162,10 @@ class TelegramCommandListener:
                             chat_obj = msg_obj.get("chat") or {}
                             cid = str(chat_obj.get("id") or cb.get("from", {}).get("id") or self.chat_id)
                             
-                            # 1. Spinner'ı ANINDA durdur!
                             await self.answer_callback(session, cb_id)
-                            # 2. Yanıtı gönder
                             if cb_data:
                                 await self.handle_command(session, cid, cb_data)
 
-                        # Normal Mesaj
                         elif "message" in item:
                             msg = item["message"]
                             cid = str(msg.get("chat", {}).get("id") or self.chat_id)
