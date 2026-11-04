@@ -73,7 +73,7 @@ class TelegramCommandListener:
             text = (
                 f"⚡ <b>[LEVERAGE SIGNAL SNIPER KONTROL PANELİ]</b> ⚡\n\n"
                 f"👋 Merhaba Halil! Bot 7/24 kesintisiz uyanık ve aktiftir.\n\n"
-                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Virginia (Uyanık Kalkanı Devrede)\n"
+                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Frankfurt (7/24 Kesintisiz)\n"
                 f"📊 <b>Tarama Havuzu:</b> 50+ Vadeli Parite (Binance Futures)\n"
                 f"💰 <b>Sanal Kasa Bakiyesi:</b> <code>${summary['balance']:.2f}</code>\n"
                 f"⏳ <b>Açık İşlem Durumu:</b> {status_desc}\n"

@@ -1,7 +1,8 @@
 """
-LeverageSignalSniper - Market Data Engine
-Binance Futures USDT-M asenkron, paralel veri çekme ve derin piyasa mikro yapı modülü.
-15m/5m mumlar, Açık Pozisyon (OI), Fonlama ve Elit Balina oranlarını paralel çeker.
+LeverageSignalSniper - Resilient Multi-Source Market Data Engine
+Binance Futures & Bybit Linear Futures Yüksek Hızlı Asenkron Veri Motoru.
+Bulut IP engellemelerine (HTTP 403 / 418) karşı otomatik Bybit failover korumalı.
+15m/5m mumlar, Açık Pozisyon (OI), Fonlama ve Elit Balina oranlarını milisaniyede çeker.
 """
 
 import asyncio
@@ -10,84 +11,178 @@ import aiohttp
 import numpy as np
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
+BYBIT_BASE = "https://api.bybit.com"
 
 class MarketDataEngine:
     def __init__(self):
         self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        self.last_status = 0  # Son Binance HTTP yanıt kodu (teşhis için)
+        self.last_status = 200
+        self.use_bybit = False  # Binance 403/418 verirse otomatik Bybit'e geçer
+        self.cached_tickers: dict[str, dict] = {}
+        self.last_tickers_update: float = 0.0
 
-    async def get_top_volume_symbols(self, session: aiohttp.ClientSession, limit: int = 50) -> list[str]:
-        """En yüksek 24 saatlik işlem hacmine sahip vadeli pariteleri bulur"""
-        url = f"{BINANCE_FUTURES_BASE}/fapi/v1/ticker/24hr"
+    async def update_cached_tickers(self, session: aiohttp.ClientSession):
+        """Tüm paritelerin fonlama, açık pozisyon ve 24s hacim verilerini tek çağrıda önbelleğe alır"""
+        now = time.time()
+        if now - self.last_tickers_update < 15.0 and self.cached_tickers:
+            return
+
+        url = f"{BYBIT_BASE}/v5/market/tickers?category=linear"
         try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    usdt_pairs = [x for x in data if x.get("symbol", "").endswith("USDT")]
-                    usdt_pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-                    top = [x["symbol"] for x in usdt_pairs[:limit]]
-                    return top
+                    tickers_list = data.get("result", {}).get("list", [])
+                    self.cached_tickers = {t["symbol"]: t for t in tickers_list if t.get("symbol")}
+                    self.last_tickers_update = now
         except Exception:
             pass
+
+    async def get_top_volume_symbols(self, session: aiohttp.ClientSession, limit: int = 50) -> list[str]:
+        """En yüksek 24 saatlik işlem hacmine sahip vadeli pariteleri bulur (Failover destekli)"""
+        if not self.use_bybit:
+            url = f"{BINANCE_FUTURES_BASE}/fapi/v1/ticker/24hr"
+            try:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    self.last_status = resp.status
+                    if resp.status == 200:
+                        data = await resp.json()
+                        usdt_pairs = [x for x in data if x.get("symbol", "").endswith("USDT")]
+                        usdt_pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+                        return [x["symbol"] for x in usdt_pairs[:limit]]
+                    elif resp.status in (403, 418, 429):
+                        self.use_bybit = True
+            except Exception:
+                self.use_bybit = True
+
+        # Bybit Failover
+        await self.update_cached_tickers(session)
+        if self.cached_tickers:
+            usdt_tickers = [t for t in self.cached_tickers.values() if t.get("symbol", "").endswith("USDT")]
+            usdt_tickers.sort(key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
+            return [t["symbol"] for t in usdt_tickers[:limit]]
         return []
 
     async def fetch_klines(self, session: aiohttp.ClientSession, symbol: str, interval: str = "5m", limit: int = 50) -> dict | None:
-        """Belirtilen periyotta mum verilerini çeker ve NumPy dizilerine çevirir"""
-        url = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        """Belirtilen periyotta mum verilerini çeker ve NumPy dizilerine çevirir (Binance & Bybit Failover)"""
+        # 1. Binance'i dene (eğer Bybit moduna geçilmediyse)
+        if not self.use_bybit:
+            url = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+            try:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                    self.last_status = resp.status
+                    if resp.status == 200:
+                        raw = await resp.json()
+                        if raw and len(raw) >= 25:
+                            closes = np.array([float(k[4]) for k in raw], dtype=np.float64)
+                            highs = np.array([float(k[2]) for k in raw], dtype=np.float64)
+                            lows = np.array([float(k[3]) for k in raw], dtype=np.float64)
+                            volumes = np.array([float(k[5]) for k in raw], dtype=np.float64)
+                            return {
+                                "symbol": symbol,
+                                "interval": interval,
+                                "closes": closes,
+                                "highs": highs,
+                                "lows": lows,
+                                "volumes": volumes,
+                                "last_price": closes[-1]
+                            }
+                    elif resp.status in (403, 418, 429):
+                        self.use_bybit = True
+            except Exception:
+                self.use_bybit = True
+
+        # 2. Bybit Failover (Bulut IP kısıtlamalarına karşı kesintisiz alternatif)
+        bybit_int = "5" if interval == "5m" else ("15" if interval == "15m" else "60")
+        url_bybit = f"{BYBIT_BASE}/v5/market/kline?category=linear&symbol={symbol}&interval={bybit_int}&limit={limit}"
         try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+            async with session.get(url_bybit, headers=self.headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 self.last_status = resp.status
                 if resp.status == 200:
-                    raw = await resp.json()
-                    if not raw or len(raw) < 25:
-                        return None
-                    
-                    closes = np.array([float(k[4]) for k in raw], dtype=np.float64)
-                    highs = np.array([float(k[2]) for k in raw], dtype=np.float64)
-                    lows = np.array([float(k[3]) for k in raw], dtype=np.float64)
-                    volumes = np.array([float(k[5]) for k in raw], dtype=np.float64)
-                    
-                    return {
-                        "symbol": symbol,
-                        "interval": interval,
-                        "closes": closes,
-                        "highs": highs,
-                        "lows": lows,
-                        "volumes": volumes,
-                        "last_price": closes[-1]
-                    }
-        except Exception:
-            return None
-
-    async def fetch_funding_rate(self, session: aiohttp.ClientSession, symbol: str) -> float:
-        """Anlık fonlama oranını çeker"""
-        url = f"{BINANCE_FUTURES_BASE}/fapi/v1/premiumIndex?symbol={symbol}"
-        try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status == 200:
                     data = await resp.json()
-                    return float(data.get("lastFundingRate", 0.0)) * 100.0
+                    raw = data.get("result", {}).get("list", [])
+                    if raw and len(raw) >= 25:
+                        raw.reverse()  # Bybit azalan sırada verir, eskiye göre sırala
+                        closes = np.array([float(k[4]) for k in raw], dtype=np.float64)
+                        highs = np.array([float(k[2]) for k in raw], dtype=np.float64)
+                        lows = np.array([float(k[3]) for k in raw], dtype=np.float64)
+                        volumes = np.array([float(k[5]) for k in raw], dtype=np.float64)
+                        return {
+                            "symbol": symbol,
+                            "interval": interval,
+                            "closes": closes,
+                            "highs": highs,
+                            "lows": lows,
+                            "volumes": volumes,
+                            "last_price": closes[-1]
+                        }
         except Exception:
             pass
+        return None
+
+    async def fetch_funding_rate(self, session: aiohttp.ClientSession, symbol: str) -> float:
+        """Anlık fonlama oranını çeker (Önbellekten veya API'den)"""
+        if symbol in self.cached_tickers:
+            try:
+                return float(self.cached_tickers[symbol].get("fundingRate", 0.0)) * 100.0
+            except Exception:
+                pass
+
+        if not self.use_bybit:
+            url = f"{BINANCE_FUTURES_BASE}/fapi/v1/premiumIndex?symbol={symbol}"
+            try:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return float(data.get("lastFundingRate", 0.0)) * 100.0
+            except Exception:
+                pass
         return 0.0
 
     async def fetch_open_interest(self, session: aiohttp.ClientSession, symbol: str) -> float:
         """Açık Pozisyon (OI - Open Interest) miktarını çeker"""
-        url = f"{BINANCE_FUTURES_BASE}/fapi/v1/openInterest?symbol={symbol}"
-        try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return float(data.get("openInterest", 0.0))
-        except Exception:
-            pass
+        if symbol in self.cached_tickers:
+            try:
+                return float(self.cached_tickers[symbol].get("openInterest", 0.0))
+            except Exception:
+                pass
+
+        if not self.use_bybit:
+            url = f"{BINANCE_FUTURES_BASE}/fapi/v1/openInterest?symbol={symbol}"
+            try:
+                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return float(data.get("openInterest", 0.0))
+            except Exception:
+                pass
         return 0.0
 
     async def fetch_top_trader_ratio(self, session: aiohttp.ClientSession, symbol: str) -> dict:
-        """Binance elit balina hesaplarının Long/Short oranını çeker"""
+        """Elit balina hesaplarının Long/Short oranını çeker (Binance / Bybit Failover)"""
+        # Bybit Balina Duygusu
+        if self.use_bybit:
+            url_bybit = f"{BYBIT_BASE}/v5/market/account-ratio?category=linear&symbol={symbol}&period=5min&limit=1"
+            try:
+                async with session.get(url_bybit, headers=self.headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("result", {}).get("list", [])
+                        if items:
+                            buy_r = float(items[0].get("buyRatio", 0.5))
+                            sell_r = float(items[0].get("sellRatio", 0.5))
+                            return {
+                                "long_pct": buy_r * 100.0,
+                                "short_pct": sell_r * 100.0,
+                                "ratio": (buy_r / sell_r) if sell_r > 0 else 1.0
+                            }
+            except Exception:
+                pass
+
+        # Binance Balina Duygusu
         url = f"{BINANCE_FUTURES_BASE}/futures/data/topLongShortAccountRatio?symbol={symbol}&period=5m&limit=1"
         try:
-            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if isinstance(data, list) and data:
@@ -99,6 +194,25 @@ class MarketDataEngine:
                         }
         except Exception:
             pass
+
+        # Alternatif Bybit denemesi
+        url_bybit = f"{BYBIT_BASE}/v5/market/account-ratio?category=linear&symbol={symbol}&period=5min&limit=1"
+        try:
+            async with session.get(url_bybit, headers=self.headers, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data.get("result", {}).get("list", [])
+                    if items:
+                        buy_r = float(items[0].get("buyRatio", 0.5))
+                        sell_r = float(items[0].get("sellRatio", 0.5))
+                        return {
+                            "long_pct": buy_r * 100.0,
+                            "short_pct": sell_r * 100.0,
+                            "ratio": (buy_r / sell_r) if sell_r > 0 else 1.0
+                        }
+        except Exception:
+            pass
+
         return {"long_pct": 50.0, "short_pct": 50.0, "ratio": 1.0}
 
     async def fetch_full_symbol_bundle(self, session: aiohttp.ClientSession, symbol: str) -> dict | None:

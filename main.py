@@ -21,7 +21,8 @@ if sys.platform == "win32":
 
 from config import (
     DEFAULT_SYMBOLS, SCAN_INTERVAL_SECONDS,
-    SIGNAL_COOLDOWN_SECONDS, TOP_SYMBOLS_COUNT, TELEGRAM_CHAT_ID
+    SIGNAL_COOLDOWN_SECONDS, TOP_SYMBOLS_COUNT, TELEGRAM_CHAT_ID,
+    MIN_CONFIDENCE_SCORE, MIN_RVOL, MAX_RISK_PER_TRADE_USD
 )
 from market_data import MarketDataEngine
 from strategy_engine import StrategyEngine
@@ -44,6 +45,7 @@ DIAG = {
     "binance_http": 0,
     "signals_total": 0,
     "trades_opened": 0,
+    "data_source": "binance",
     "last_error": "",
     "top_scores": [],
 }
@@ -100,8 +102,8 @@ async def heartbeat_worker(notifier: TelegramNotifier, paper_trader: PaperTrader
                 f"💼 <b>Sanal Kasa:</b> <code>${summary['balance']:.2f}</code>\n"
                 f"🎯 <b>Açık İşlem:</b> {summary['open_count']} adet\n"
                 f"📈 <b>Toplam PnL:</b> {'+' if summary['realized_pnl']>=0 else ''}${summary['realized_pnl']:.2f}\n"
-                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Virginia (Uyanık & Aktif)\n\n"
-                f"<i>Kriterlere (%80+ güven, RVOL>1.7x balina hacmi) uyan sinyal oluştuğunda anında açılacaktır.</i>"
+                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Frankfurt 7/24 (Uyanık & Aktif)\n\n"
+                f"<i>Dengeli Mod: %{MIN_CONFIDENCE_SCORE}+ güven ve RVOL ≥ {MIN_RVOL:.2f}x şartı sağlandığında anında açılır.</i>"
             )
             async with aiohttp.ClientSession() as s:
                 await notifier.send_message(s, text)
@@ -155,6 +157,7 @@ async def market_scanner_worker(
                 DIAG["symbols"] = len(symbols)
                 DIAG["bundles_ok"] = sum(1 for b in bundles if b)
                 DIAG["binance_http"] = market.last_status
+                DIAG["data_source"] = "bybit" if market.use_bybit else "binance" 
 
                 # 3. Canlı fiyatlarla Sanal İşlemleri Güncelle
                 current_prices = {}

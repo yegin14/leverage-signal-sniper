@@ -20,8 +20,8 @@ MAX_ALLOWED_LEVERAGE = int(os.getenv("MAX_ALLOWED_LEVERAGE", "20"))
 MIN_ALLOWED_LEVERAGE = int(os.getenv("MIN_ALLOWED_LEVERAGE", "3"))
 
 # --- GELİŞMİŞ FİLTRE VE EŞİK DEĞERLERİ (DENGELİ VE AKTİF MOD) ---
-MIN_RVOL = float(os.getenv("MIN_RVOL", "1.20"))  # Dengeli Hacim Eşiği (Ortalamanın %20 üzeri)
-MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", "65"))  # Dengeli Güven Eşiği (0-100)
+MIN_RVOL = float(os.getenv("MIN_RVOL", "1.15"))  # Dengeli Hacim Eşiği (Ortalamanın %15 üzeri)
+MIN_CONFIDENCE_SCORE = int(os.getenv("MIN_CONFIDENCE_SCORE", "60"))  # Dengeli Güven Eşiği (0-100)
 SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "1800"))  # 30 dk cooldown
 SCAN_INTERVAL_SECONDS = float(os.getenv("SCAN_INTERVAL_SECONDS", "3.0"))
 TOP_SYMBOLS_COUNT = int(os.getenv("TOP_SYMBOLS_COUNT", "50"))  # İzlenen aktif parite sayısı (50-60 adet)
