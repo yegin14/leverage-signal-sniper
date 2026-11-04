@@ -68,16 +68,15 @@ def calc_bollinger_bands(prices: np.ndarray, period: int = 20, num_std: float = 
 
 def calc_rvol(volumes: np.ndarray, period: int = 20) -> float:
     """Göreceli Hacim (RVOL - Relative Volume)
-    Son hacmin geçmiş 20 mumluk ortalamaya oranı.
-    RVOL > 2.0 = Ciddi balina / hacim patlaması demektir.
+    Tamamlanan son mumun (veya anlık mum daha şimdiden geçtiyse anlık) geçmiş 20 mum ortalamasına oranı.
     """
-    if len(volumes) < period + 1:
+    if len(volumes) < period + 2:
         return 1.0
-    avg_vol = np.mean(volumes[-period-1:-1])
+    avg_vol = np.mean(volumes[-period-2:-2])
     if avg_vol <= 0:
         return 1.0
-    current_vol = volumes[-1]
-    return float(current_vol / avg_vol)
+    effective_vol = max(volumes[-2], volumes[-1])
+    return float(effective_vol / avg_vol)
 
 def calc_macd_histogram(prices: np.ndarray) -> tuple[float, float]:
     """MACD Hattı ve Histogram Değeri"""
