@@ -9,6 +9,7 @@ import asyncio
 import time
 import aiohttp
 import numpy as np
+from config import DEFAULT_SYMBOLS
 
 BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 BYBIT_BASE = "https://api.bybit.com"
@@ -39,29 +40,16 @@ class MarketDataEngine:
             pass
 
     async def get_top_volume_symbols(self, session: aiohttp.ClientSession, limit: int = 50) -> list[str]:
-        """En yüksek 24 saatlik işlem hacmine sahip vadeli pariteleri bulur (Failover destekli)"""
-        if not self.use_bybit:
-            url = f"{BINANCE_FUTURES_BASE}/fapi/v1/ticker/24hr"
-            try:
-                async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                    self.last_status = resp.status
-                    if resp.status == 200:
-                        data = await resp.json()
-                        usdt_pairs = [x for x in data if x.get("symbol", "").endswith("USDT")]
-                        usdt_pairs.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-                        return [x["symbol"] for x in usdt_pairs[:limit]]
-                    elif resp.status in (403, 418, 429):
-                        self.use_bybit = True
-            except Exception:
-                self.use_bybit = True
-
-        # Bybit Failover
+        """50 Premier Kripto Paritesini 24 saatlik hacimlerine göre sıralar (Saf Kripto Teyitli)"""
         await self.update_cached_tickers(session)
         if self.cached_tickers:
-            usdt_tickers = [t for t in self.cached_tickers.values() if t.get("symbol", "").endswith("USDT")]
-            usdt_tickers.sort(key=lambda x: float(x.get("turnover24h", 0)), reverse=True)
-            return [t["symbol"] for t in usdt_tickers[:limit]]
-        return []
+            # Sadece onaylı kripto paritelerini hacimlerine göre sırala
+            valid_crypto = [s for s in DEFAULT_SYMBOLS if s in self.cached_tickers]
+            valid_crypto.sort(key=lambda s: float(self.cached_tickers[s].get("turnover24h", 0)), reverse=True)
+            missing = [s for s in DEFAULT_SYMBOLS if s not in valid_crypto]
+            return (valid_crypto + missing)[:limit]
+
+        return DEFAULT_SYMBOLS[:limit]
 
     async def fetch_klines(self, session: aiohttp.ClientSession, symbol: str, interval: str = "5m", limit: int = 50) -> dict | None:
         """Belirtilen periyotta mum verilerini çeker ve NumPy dizilerine çevirir (Binance & Bybit Failover)"""

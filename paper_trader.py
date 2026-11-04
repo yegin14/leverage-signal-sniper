@@ -33,6 +33,15 @@ class PaperTrader:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     self.state.update(loaded)
+
+                # Saf Kripto Temizliği: Eski oturumdan kalan Altın ve hisse pozisyonlarının teminatını iade et
+                non_crypto = [s for s in list(self.state.get("open_positions", {}).keys()) if s in ("XAUUSDT", "SPCXUSDT", "SOXLUSDT", "CLUSDT")]
+                for s in non_crypto:
+                    pos = self.state["open_positions"].pop(s)
+                    self.state["balance"] += pos.get("remaining_margin_usd", 0.0)
+                    print(f"[PaperTrader] Kripto dışı sembol tasfiye edildi ve teminat iade edildi: {s}")
+                if non_crypto:
+                    self.save_state()
             except Exception as e:
                 print(f"[PaperTrader] State yüklenirken hata: {e}")
 

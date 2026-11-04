@@ -112,9 +112,9 @@ class TelegramCommandListener:
                     dir_icon = "🟢 LONG" if pos["direction"] == "LONG" else "🔴 SHORT"
                     rf_badge = " [🛡️ BREAK-EVEN ZIRHI AKTİF]" if pos.get("is_risk_free") else ""
                     lines.append(
-                        f"• <b>#{sym}</b> ({dir_icon} {pos['leverage']}x){rf_badge}\n"
+                        f"• <b>#{sym}</b> ({dir_icon} {pos['leverage']}x)\n"
                         f"  Giriş: ${pos['entry_price']} | Stop: ${pos['stop_loss']}\n"
-                        f"  Hedef 1: ${pos['tp1']} | Hedef 2: ${pos['tp2']}\n"
+                        f"  Hedef (TP1): ${pos['tp1']}\n"
                         f"  Teminat: ${pos['margin_usd']:.2f}"
                     )
                 text = f"🎯 <b>[AKTİF AÇIK İŞLEMLER ({len(open_pos)})]</b>\n\n" + "\n\n".join(lines)
@@ -126,12 +126,13 @@ class TelegramCommandListener:
                 f"🌐 <b>Sunucu:</b> Render 7/24 Kesintisiz\n"
                 f"📡 <b>Hız:</b> ~1.2 saniye / 50 parite (Sub-second)\n"
                 f"🛡️ <b>Keep-Awake Kalkanı:</b> Devrede (Uykuya asla dalmaz)\n\n"
-                f"🔍 <b>Aktif Doğrulama Süzgeçleri (Dengeli Mod):</b>\n"
-                f"  ✓ 15D Makro EMA Trend Uyumu\n"
-                f"  ✓ 5D RVOL Hacim Teyidi (≥{MIN_RVOL:.2f}x)\n"
-                f"  ✓ TradingView 26-İndikatör (ters yönde GÜÇLÜ sinyal varsa engeller)\n"
+                f"🔍 <b>Aktif Doğrulama Süzgeçleri (15D Kurumsal Mod):</b>\n"
+                f"  ✓ 15D Makro EMA20/EMA50 Trend Uyumu\n"
+                f"  ✓ 15D RVOL Hacim Teyidi (≥{MIN_RVOL:.2f}x)\n"
+                f"  ✓ 15D EMA20 Pullback / Yapısal Kırılım Teyidi\n"
+                f"  ✓ 15D Structure Stop-Loss (Min %1.25 Nefes Alanı)\n"
+                f"  ✓ TradingView 26-İndikatör (Zıt sinyali kesin engeller)\n"
                 f"  ✓ Elit Balina Pozisyon Teyidi (bonus puan)\n"
-                f"  ✓ Flaş Haber & Kriz Kalkanı (Cointelegraph)\n"
                 f"  ✓ Minimum Güven Skoru: %{MIN_CONFIDENCE_SCORE}\n\n"
                 f"🎯 <i>Piyasa yapıcılar tahtayı kırdığı anda bildirim telefonuna düşecektir.</i>"
             )
