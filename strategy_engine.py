@@ -1,7 +1,6 @@
 """
 LeverageSignalSniper - Advanced Multi-Factor Strategy Engine
-Fiyat Hareketi, RVOL, TradingView 26-İndikatör Konsensüsü,
-Binance Balina Oranları ve Flaş Haber Kalkanını birleştiren kurumsal analiz motoru.
+Dengeli ve Aktif Mod: Trend, RVOL (>1.2x), Kırılım, TradingView ve Balina Teyidi.
 """
 
 import time
@@ -45,12 +44,6 @@ class StrategyEngine:
 
         closes_15m = k15m["closes"]
 
-        # --- HABER KALKANI KONTROLÜ ---
-        if ENABLE_NEWS_SHIELD and news_info:
-            if news_info.get("is_bearish"):
-                # Kötü haber varken asla LONG açılamaz (Tuzak Koruması)
-                pass
-
         # --- 1. TEKNİK FİYAT HAREKETİ VE TREND ---
         ema20_15m = calc_ema(closes_15m, 20)
         ema50_15m = calc_ema(closes_15m, 50)
@@ -69,89 +62,83 @@ class StrategyEngine:
         confidence = 0
         reasons = []
 
-        # --- 2. TRADINGVIEW KONSENSÜS KONTROLÜ ---
         tv_rating = tv_data.get("rating", "NEUTRAL") if tv_data else "NEUTRAL"
         tv_badge = tv_data.get("badge", "⚪ NÖTR") if tv_data else "⚪ NÖTR"
 
         # --- LONG DEĞERLENDİRMESİ ---
         if is_macro_bull:
-            # Haber Kalkanı: Eğer olumsuz haber varsa Long açma
             if ENABLE_NEWS_SHIELD and news_info and news_info.get("is_bearish"):
                 return None
 
-            # TradingView Filtresi: Eğer TV "STRONG_SELL" diyorsa asla Long açma
+            # Sadece zıt yönde güçlü satış varsa engelle
             if ENABLE_TRADINGVIEW_FILTER and tv_rating == "STRONG_SELL":
                 return None
 
-            confidence += 20
-            reasons.append("15D Makro Trend: Güçlü Yükseliş (EMA20 > EMA50)")
+            confidence += 25
+            reasons.append("15D Makro Trend: Yükseliş Kanalı (EMA20 > EMA50)")
 
             if rvol >= MIN_RVOL:
-                confidence += 20
-                reasons.append(f"Hacim Patlaması: RVOL {rvol:.1f}x (Ortalamanın üzerinde hacim)")
+                confidence += 25
+                reasons.append(f"Hacim Teyidi: RVOL {rvol:.2f}x (Ortalama üzeri hacim)")
 
             if current_price >= bb_upper or donchian == "BREAKOUT_UP":
                 confidence += 15
-                reasons.append("Kırılım Teyidi: Bollinger Üst Bant / Donchian Kırıldı")
+                reasons.append("Kırılım: Bollinger Üst Bant / Donchian Patlaması")
             elif closes_5m[-1] > bb_mid and macd_hist > 0:
                 confidence += 10
-                reasons.append("Momentum: MACD Pozitif Genişleme")
+                reasons.append("Momentum: Pozitif MACD İvmesi")
 
-            if 48.0 <= rsi_5m <= 75.0:
+            if 45.0 <= rsi_5m <= 75.0:
                 confidence += 10
-                reasons.append(f"RSI İvmesi: {rsi_5m:.1f} (Yükseliş Kanalı)")
+                reasons.append(f"RSI Dengesi: {rsi_5m:.1f} (Sağlıklı Yükseliş)")
 
-            # TradingView Onayı
-            if ENABLE_TRADINGVIEW_FILTER and tv_rating in ["STRONG_BUY", "BUY"]:
-                confidence += 20
-                reasons.append(f"TradingView Konsensüsü: {tv_badge} (26 İndikatör Onaylı)")
+            # TradingView Puanı
+            if tv_rating in ["STRONG_BUY", "BUY"]:
+                confidence += 15
+                reasons.append(f"TradingView: {tv_badge}")
+            elif tv_rating == "NEUTRAL":
+                confidence += 5
 
             # Balina Duygusu
-            if ENABLE_WHALE_SENTIMENT and whale.get("long_pct", 50) >= 58.0:
-                confidence += 15
-                reasons.append(f"Elit Balina Teyidi: %{whale['long_pct']:.1f} Long Pozisyonda")
-
-            # Flaş Haber Bonusu
-            if news_info and news_info.get("is_bullish"):
+            if ENABLE_WHALE_SENTIMENT and whale.get("long_pct", 50) >= 54.0:
                 confidence += 10
-                reasons.append(f"Flaş Haber: {news_info['headline'][:45]}... (Pozitif Akış)")
+                reasons.append(f"Balina Teyidi: %{whale['long_pct']:.1f} Long")
 
             if confidence >= MIN_CONFIDENCE_SCORE:
                 signal_direction = "LONG"
 
         # --- SHORT DEĞERLENDİRMESİ ---
         elif is_macro_bear:
-            # TradingView Filtresi: Eğer TV "STRONG_BUY" diyorsa asla Short açma
             if ENABLE_TRADINGVIEW_FILTER and tv_rating == "STRONG_BUY":
                 return None
 
-            confidence += 20
-            reasons.append("15D Makro Trend: Güçlü Düşüş (EMA20 < EMA50)")
+            confidence += 25
+            reasons.append("15D Makro Trend: Düşüş Kanalı (EMA20 < EMA50)")
 
             if rvol >= MIN_RVOL:
-                confidence += 20
-                reasons.append(f"Satış Hacmi: RVOL {rvol:.1f}x (Yoğun Satıcı Baskısı)")
+                confidence += 25
+                reasons.append(f"Satış Hacmi: RVOL {rvol:.2f}x (Satıcı Baskısı)")
 
             if current_price <= bb_lower or donchian == "BREAKOUT_DOWN":
                 confidence += 15
-                reasons.append("Kırılım Teyidi: Bollinger Alt Bant / Donchian Tabanı Kırıldı")
+                reasons.append("Kırılım: Bollinger Alt Bant / Donchian Tabanı")
             elif closes_5m[-1] < bb_mid and macd_hist < 0:
                 confidence += 10
-                reasons.append("Momentum: MACD Negatif Genişleme")
+                reasons.append("Momentum: Negatif MACD İvmesi")
 
-            if 25.0 <= rsi_5m <= 52.0:
+            if 25.0 <= rsi_5m <= 55.0:
                 confidence += 10
-                reasons.append(f"RSI İvmesi: {rsi_5m:.1f} (Satış Baskısı Güçlü)")
+                reasons.append(f"RSI Dengesi: {rsi_5m:.1f} (Satış Baskısı)")
 
-            # TradingView Onayı
-            if ENABLE_TRADINGVIEW_FILTER and tv_rating in ["STRONG_SELL", "SELL"]:
-                confidence += 20
-                reasons.append(f"TradingView Konsensüsü: {tv_badge} (26 İndikatör Onaylı)")
-
-            # Balina Duygusu
-            if ENABLE_WHALE_SENTIMENT and whale.get("short_pct", 50) >= 58.0:
+            if tv_rating in ["STRONG_SELL", "SELL"]:
                 confidence += 15
-                reasons.append(f"Elit Balina Teyidi: %{whale['short_pct']:.1f} Short Pozisyonda")
+                reasons.append(f"TradingView: {tv_badge}")
+            elif tv_rating == "NEUTRAL":
+                confidence += 5
+
+            if ENABLE_WHALE_SENTIMENT and whale.get("short_pct", 50) >= 54.0:
+                confidence += 10
+                reasons.append(f"Balina Teyidi: %{whale['short_pct']:.1f} Short")
 
             if confidence >= MIN_CONFIDENCE_SCORE:
                 signal_direction = "SHORT"
@@ -159,7 +146,7 @@ class StrategyEngine:
         if not signal_direction:
             return None
 
-        # --- 3. DİNAMİK STOP VE HEDEFLER (ATR) ---
+        # --- 2. DİNAMİK STOP VE HEDEFLER (ATR) ---
         stop_buffer = atr_5m * 1.5
         if signal_direction == "LONG":
             stop_loss = current_price - stop_buffer
@@ -178,7 +165,7 @@ class StrategyEngine:
         if sl_distance_pct <= 0.1:
             return None
 
-        # --- 4. KASA VE DİNAMİK KALDIRAÇ ---
+        # --- 3. KASA VE DİNAMİK KALDIRAÇ ---
         target_position_usd = MAX_RISK_PER_TRADE_USD / (sl_distance_pct / 100.0)
         ideal_margin_usd = min(ACCOUNT_SIZE_USD * 0.15, 20.0)
         raw_leverage = target_position_usd / ideal_margin_usd
