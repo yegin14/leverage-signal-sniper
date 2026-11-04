@@ -5,7 +5,10 @@ Buton tıklamalarını <100ms içinde anında yanıtlayan, bağımsız asenkron 
 
 import asyncio
 import aiohttp
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config import (
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    MIN_RVOL, MIN_CONFIDENCE_SCORE, MAX_RISK_PER_TRADE_USD
+)
 from paper_trader import PaperTrader
 
 class TelegramCommandListener:
@@ -99,9 +102,9 @@ class TelegramCommandListener:
                     f"🎯 <b>[AÇIK İŞLEM DURUMU]</b>\n\n"
                     f"🟢 <b>Şu an açıkta bekleyen pozisyon YOK.</b>\n\n"
                     f"🔍 <b>Neden İşlem Yok?</b>\n"
-                    f"Bot parayı korumak için sadece <b>%80+ Güven Skoru</b> ve <b>RVOL > 1.7x balina hacmi</b> gördüğünde girer. "
-                    f"Şu anki piyasada bu şartlar oluşmadığı için paran güvende tutuluyor.\n\n"
-                    f"📡 50+ parite saniyelik taranıyor; kırılım olduğunda otomatik açılacak ve sana bildirim gelecektir."
+                    f"Bot <b>%{MIN_CONFIDENCE_SCORE}+ Güven Skoru</b> ve <b>RVOL ≥ {MIN_RVOL:.2f}x hacim</b> gördüğünde girer. "
+                    f"Her işlemde maksimum risk sabit <b>${MAX_RISK_PER_TRADE_USD:.2f}</b>.\n\n"
+                    f"📡 Pariteler taranıyor; şartlar oluştuğunda otomatik açılacak ve sana bildirim gelecektir."
                 )
             else:
                 lines = []
@@ -120,15 +123,16 @@ class TelegramCommandListener:
         elif command in ["/radar", "cmd_radar"]:
             text = (
                 f"⚡ <b>[CANLI RADAR MOTORU BİLGİSİ]</b> ⚡\n\n"
-                f"🌐 <b>Sunucu:</b> Render Virginia (US-East) 7/24 Kesintisiz\n"
+                f"🌐 <b>Sunucu:</b> Render 7/24 Kesintisiz\n"
                 f"📡 <b>Hız:</b> ~1.2 saniye / 50 parite (Sub-second)\n"
                 f"🛡️ <b>Keep-Awake Kalkanı:</b> Devrede (Uykuya asla dalmaz)\n\n"
-                f"🔍 <b>Aktif Doğrulama Süzgeçleri:</b>\n"
+                f"🔍 <b>Aktif Doğrulama Süzgeçleri (Dengeli Mod):</b>\n"
                 f"  ✓ 15D Makro EMA Trend Uyumu\n"
-                f"  ✓ 5D RVOL Hacim Patlaması (>1.7x Balina Girişi)\n"
-                f"  ✓ TradingView 26-İndikatör Konsensüsü (GÜÇLÜ AL/SAT)\n"
-                f"  ✓ Elit Balina Pozisyon Teyidi (>%58)\n"
-                f"  ✓ Flaş Haber & Kriz Kalkanı (Cointelegraph)\n\n"
+                f"  ✓ 5D RVOL Hacim Teyidi (≥{MIN_RVOL:.2f}x)\n"
+                f"  ✓ TradingView 26-İndikatör (ters yönde GÜÇLÜ sinyal varsa engeller)\n"
+                f"  ✓ Elit Balina Pozisyon Teyidi (bonus puan)\n"
+                f"  ✓ Flaş Haber & Kriz Kalkanı (Cointelegraph)\n"
+                f"  ✓ Minimum Güven Skoru: %{MIN_CONFIDENCE_SCORE}\n\n"
                 f"🎯 <i>Piyasa yapıcılar tahtayı kırdığı anda bildirim telefonuna düşecektir.</i>"
             )
             await self.send_response(session, chat_id, text, self.get_menu_keyboard())

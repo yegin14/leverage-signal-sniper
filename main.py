@@ -33,9 +33,31 @@ from telegram_listener import TelegramCommandListener
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://leverage-signal-sniper.onrender.com").strip().rstrip("/")
 
+# --- CANLI TEŞHİS DURUMU (/status sayfasında gösterilir) ---
+import json as _json
+DIAG = {
+    "started_at": time.time(),
+    "cycles": 0,
+    "last_cycle_at": 0,
+    "symbols": 0,
+    "bundles_ok": 0,
+    "binance_http": 0,
+    "signals_total": 0,
+    "trades_opened": 0,
+    "last_error": "",
+    "top_scores": [],
+}
+
 # --- BULUT SUNUCULAR İÇİN HEALTH-CHECK SUNUCUSU ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith("/status"):
+            body = _json.dumps(DIAG, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -128,6 +150,11 @@ async def market_scanner_worker(
                     bundles.extend(results)
                     
                 fetch_time_ms = (time.time() - t_fetch_start) * 1000.0
+                DIAG["cycles"] += 1
+                DIAG["last_cycle_at"] = time.time()
+                DIAG["symbols"] = len(symbols)
+                DIAG["bundles_ok"] = sum(1 for b in bundles if b)
+                DIAG["binance_http"] = market.last_status
 
                 # 3. Canlı fiyatlarla Sanal İşlemleri Güncelle
                 current_prices = {}
@@ -160,6 +187,7 @@ async def market_scanner_worker(
                     sig = strategy.evaluate_bundle(bundle, tv_data=tv_data, news_info=news_info)
                     if sig:
                         signals_found += 1
+                        DIAG["signals_total"] += 1
                         strategy.register_signal(sym)
                         
                         # Sinyali İlet
@@ -169,6 +197,7 @@ async def market_scanner_worker(
                         # Sanal İşlem Aç
                         opened = paper_trader.open_virtual_trade(sig)
                         if opened:
+                            DIAG["trades_opened"] += 1
                             summary = paper_trader.get_summary()
                             open_msg = notifier.build_trade_open_message(opened, summary)
                             print(f"[🎮 Sanal İşlem]: {opened['symbol']} {opened['direction']} ({opened['leverage']}x)")
@@ -186,6 +215,7 @@ async def market_scanner_worker(
                 sys.stdout.flush()
 
             except Exception as e:
+                DIAG["last_error"] = str(e)[:200]
                 print(f"\n[Tarayıcı Döngü Uyarısı]: {e}")
 
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)

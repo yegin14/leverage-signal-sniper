@@ -14,6 +14,7 @@ BINANCE_FUTURES_BASE = "https://fapi.binance.com"
 class MarketDataEngine:
     def __init__(self):
         self.headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        self.last_status = 0  # Son Binance HTTP yanıt kodu (teşhis için)
 
     async def get_top_volume_symbols(self, session: aiohttp.ClientSession, limit: int = 50) -> list[str]:
         """En yüksek 24 saatlik işlem hacmine sahip vadeli pariteleri bulur"""
@@ -35,6 +36,7 @@ class MarketDataEngine:
         url = f"{BINANCE_FUTURES_BASE}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
         try:
             async with session.get(url, headers=self.headers, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                self.last_status = resp.status
                 if resp.status == 200:
                     raw = await resp.json()
                     if not raw or len(raw) < 25:
