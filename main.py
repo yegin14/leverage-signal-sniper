@@ -32,6 +32,7 @@ from paper_trader import PaperTrader
 from telegram_notifier import TelegramNotifier
 from telegram_listener import TelegramCommandListener
 
+GLOBAL_PAPER_TRADER = None
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://leverage-signal-sniper.onrender.com").strip().rstrip("/")
 
 # --- CANLI TEŞHİS DURUMU (/status sayfasında gösterilir) ---
@@ -54,7 +55,11 @@ DIAG = {
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/status"):
-            body = _json.dumps(DIAG, ensure_ascii=False, indent=2).encode("utf-8")
+            resp_data = dict(DIAG)
+            if GLOBAL_PAPER_TRADER:
+                resp_data["open_positions"] = GLOBAL_PAPER_TRADER.state.get("open_positions", {})
+                resp_data["summary"] = GLOBAL_PAPER_TRADER.get_summary()
+            body = _json.dumps(resp_data, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
@@ -236,7 +241,9 @@ async def main():
     strategy = StrategyEngine()
     tv_client = TradingViewClient()
     news_scanner = NewsScanner()
+    global GLOBAL_PAPER_TRADER
     paper_trader = PaperTrader()
+    GLOBAL_PAPER_TRADER = paper_trader
     notifier = TelegramNotifier()
     cmd_listener = TelegramCommandListener(paper_trader)
 

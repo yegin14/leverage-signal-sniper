@@ -101,10 +101,10 @@ class TelegramCommandListener:
                 text = (
                     f"🎯 <b>[AÇIK İŞLEM DURUMU]</b>\n\n"
                     f"🟢 <b>Şu an açıkta bekleyen pozisyon YOK.</b>\n\n"
-                    f"🔍 <b>Neden İşlem Yok?</b>\n"
-                    f"Bot <b>%{MIN_CONFIDENCE_SCORE}+ Güven Skoru</b> ve <b>RVOL ≥ {MIN_RVOL:.2f}x hacim</b> gördüğünde girer. "
-                    f"Her işlemde maksimum risk sabit <b>${MAX_RISK_PER_TRADE_USD:.2f}</b>.\n\n"
-                    f"📡 Pariteler taranıyor; şartlar oluştuğunda otomatik açılacak ve sana bildirim gelecektir."
+                    f"⚙️ <b>Aktif Strateji Modu:</b> Dengeli & Aktif (%{MIN_CONFIDENCE_SCORE}+ Güven, RVOL ≥ {MIN_RVOL:.2f}x)\n"
+                    f"🛡️ <b>Sermaye Güvenliği:</b> Sabit <b>${MAX_RISK_PER_TRADE_USD:.2f}</b> / işlem (%2 risk)\n"
+                    f"🎯 <b>Kâr Stratejisi:</b> TP1 (+1.5R) hedefinde işlem <b>%100 kapatılır</b> ve kâr anında kasaya kilitlenir.\n\n"
+                    f"📡 50+ parite saniyelik taranıyor; şartlar sağlandığında anında sanal işlem açılır ve telefonuna bildirim düşer."
                 )
             else:
                 lines = []

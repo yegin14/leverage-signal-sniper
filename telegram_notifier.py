@@ -99,8 +99,8 @@ class TelegramNotifier:
         pnl_sign = "+" if pnl > 0 else ""
         
         if ev_type == "TP1_HIT":
-            header = "🎯 <b>[HEDEF 1 VURULDU - TP1]</b>"
-            note = "🛡️ <b>ZIRH DEVREDE:</b> Pozisyonun %50'si kârla kapatıldı. Stop-loss doğrudan <b>GİRİŞ FİYATINA</b> çekildi! İşlem artık <b>%100 RİSKSİZDİR</b>."
+            header = "🎯 <b>[HEDEF 1 VURULDU - İŞLEM KAPATILDI]</b>"
+            note = "✅ <b>KÂR KASAYA KİLİTLENDİ:</b> TP1 (+1.5R) hedefi vuruldu ve işlem <b>%100 kapatıldı</b>. Anapara teminatı ve net kâr kasaya eklendi!"
         elif ev_type == "TP2_HIT":
             header = "🎯🎯 <b>[HEDEF 2 VURULDU - TP2]</b>"
             note = "🚀 Kalan pozisyonun %30'u daha kârla kapatıldı!"

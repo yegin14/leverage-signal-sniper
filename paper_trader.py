@@ -165,32 +165,38 @@ class PaperTrader:
                 })
                 continue
 
-            # --- 2. TP1 KONTROLÜ (Pozisyonun %50'si Kapatılır, Stop Girişe Çekilir) ---
+            # --- 2. TP1 KONTROLÜ (Pozisyonun %100'ü Kapatılır - Anında Kâr Al ve Çık) ---
             is_tp1_hit = (cur_price >= tp1) if direction == "LONG" else (cur_price <= tp1)
-            if is_tp1_hit and not pos["tp1_hit"]:
-                # %50 kâr al
-                close_ratio = 0.50
-                freed_margin = pos["margin_usd"] * close_ratio
-                tp1_pnl = pos["max_risk_usd"] * 1.5 * close_ratio  # 1.5R kâr
-                
-                pos["realized_pnl"] += tp1_pnl
-                pos["remaining_margin_usd"] -= freed_margin
-                pos["remaining_position_usd"] -= (pos["position_size_usd"] * close_ratio)
-                pos["tp1_hit"] = True
-                
-                # ZIRH: Stop-Loss'u doğrudan GİRİŞ FİYATINA çek!
-                pos["stop_loss"] = entry
-                pos["is_risk_free"] = True
-                
-                # Kârı ve açığa çıkan teminatı kasaya ekle
-                self.state["balance"] += freed_margin + tp1_pnl
+            if is_tp1_hit or pos.get("tp1_hit"):
+                rem_margin = pos["remaining_margin_usd"]
+                # Eğer daha önce kısmi kâr alınmadıysa tam 1.5R kâr al
+                if not pos.get("tp1_hit"):
+                    tp1_pnl = pos["max_risk_usd"] * 1.5  # 1.5R Net Kâr ($3.00)
+                    pos["realized_pnl"] += tp1_pnl
+                else:
+                    tp1_pnl = 0.0
+
+                # Anapara teminatını ve kârı bakiyeye iade et
+                self.state["balance"] += rem_margin + tp1_pnl
+                self.state["realized_pnl"] += tp1_pnl
+                self.state["total_trades"] += 1
+                self.state["win_trades"] += 1
+
+                pos["close_price"] = cur_price
+                pos["close_time"] = time.time()
+                pos["total_pnl"] = pos["realized_pnl"]
+                pos["exit_reason"] = "🎯 TP1 KÂR ALINDI (Pozisyon %100 Başarıyla Kapatıldı)"
+                self.state["history"].append(pos)
+                closed_syms.append(sym)
 
                 events.append({
                     "event": "TP1_HIT",
                     "position": pos,
-                    "pnl": tp1_pnl,
-                    "close_price": cur_price
+                    "pnl": pos["realized_pnl"],
+                    "close_price": cur_price,
+                    "reason": "🎯 TP1 Hedefi Vuruldu - Pozisyon %100 Kapatıldı"
                 })
+                continue
 
             # --- 3. TP2 KONTROLÜ (Kalanın %30'u Kapatılır) ---
             is_tp2_hit = (cur_price >= tp2) if direction == "LONG" else (cur_price <= tp2)
