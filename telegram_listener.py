@@ -7,7 +7,7 @@ import asyncio
 import aiohttp
 from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-    MIN_RVOL, MIN_CONFIDENCE_SCORE, MAX_RISK_PER_TRADE_USD
+    MIN_RVOL, MIN_CONFIDENCE_SCORE, MAX_RISK_PER_TRADE_USD, BOT_PAUSED
 )
 from paper_trader import PaperTrader
 
@@ -69,11 +69,16 @@ class TelegramCommandListener:
         if command in ["/start", "/menu", "/durum", "cmd_menu"]:
             pnl_sign = "+" if summary["realized_pnl"] >= 0 else ""
             open_count = summary["open_count"]
-            status_desc = f"{open_count} adet pozisyonda" if open_count > 0 else "Pusuda bekleniyor (Sinyal aranıyor)"
+            if BOT_PAUSED:
+                status_desc = "⏸️ GEÇİCİ OLARAK DURDURULDU (Kullanıcı İsteğiyle)"
+                server_status = "⏸️ BOT DURDURULDU (Sinyal aranmıyor)"
+            else:
+                status_desc = f"{open_count} adet pozisyonda" if open_count > 0 else "Pusuda bekleniyor (Sinyal aranıyor)"
+                server_status = "🟢 Render Frankfurt (7/24 Kesintisiz)"
             text = (
                 f"⚡ <b>[LEVERAGE SIGNAL SNIPER KONTROL PANELİ]</b> ⚡\n\n"
                 f"👋 Merhaba Halil! Bot 7/24 kesintisiz uyanık ve aktiftir.\n\n"
-                f"🌐 <b>Sunucu Durumu:</b> 🟢 Render Frankfurt (7/24 Kesintisiz)\n"
+                f"🌐 <b>Sunucu Durumu:</b> {server_status}\n"
                 f"📊 <b>Tarama Havuzu:</b> 50+ Vadeli Parite (Binance Futures)\n"
                 f"💰 <b>Sanal Kasa Bakiyesi:</b> <code>${summary['balance']:.2f}</code>\n"
                 f"⏳ <b>Açık İşlem Durumu:</b> {status_desc}\n"

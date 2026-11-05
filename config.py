@@ -13,6 +13,11 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9255550428:AAFUnIhge5_tWy0odDvtorm-xRWSWX_R2CI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# --- BOT GEÇİCİ DURDURMA ANAHTARI (KULLANICI İSTEĞİYLE KAPALI) ---
+# True iken hiçbir tarama, sinyal üretimi veya işlem açma yapılmaz.
+# Kullanıcı "kaldıraç botunu aç" dediğinde bu değer False yapılır.
+BOT_PAUSED = os.getenv("BOT_PAUSED", "true").lower() == "true"
+
 # --- KASA VE RİSK YÖNETİMİ ($1,000 Bütçe) ---
 ACCOUNT_SIZE_USD = float(os.getenv("ACCOUNT_SIZE_USD", "1000.0"))
 MAX_RISK_PER_TRADE_USD = float(os.getenv("MAX_RISK_PER_TRADE_USD", "20.0"))  # %2 Sabit Risk ($20)

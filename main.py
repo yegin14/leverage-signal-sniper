@@ -22,7 +22,7 @@ if sys.platform == "win32":
 from config import (
     DEFAULT_SYMBOLS, SCAN_INTERVAL_SECONDS,
     SIGNAL_COOLDOWN_SECONDS, TOP_SYMBOLS_COUNT, TELEGRAM_CHAT_ID,
-    MIN_CONFIDENCE_SCORE, MIN_RVOL, MAX_RISK_PER_TRADE_USD
+    MIN_CONFIDENCE_SCORE, MIN_RVOL, MAX_RISK_PER_TRADE_USD, BOT_PAUSED
 )
 from market_data import MarketDataEngine
 from strategy_engine import StrategyEngine
@@ -64,6 +64,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/status"):
             resp_data = dict(DIAG)
+            resp_data["bot_paused"] = BOT_PAUSED
+            if BOT_PAUSED:
+                resp_data["status"] = "PAUSED_BY_USER"
             if GLOBAL_PAPER_TRADER:
                 resp_data["open_positions"] = GLOBAL_PAPER_TRADER.state.get("open_positions", {})
                 resp_data["summary"] = GLOBAL_PAPER_TRADER.get_summary()
@@ -107,6 +110,8 @@ async def heartbeat_worker(notifier: TelegramNotifier, paper_trader: PaperTrader
     """Kullanıcının aklında soru işareti kalmaması için 4 saatte bir Telegram'a durum raporu atar"""
     while True:
         await asyncio.sleep(14400)  # 4 Saatte bir
+        if BOT_PAUSED:
+            continue
         try:
             summary = paper_trader.get_summary()
             text = (
@@ -147,6 +152,11 @@ async def market_scanner_worker(
     print(f"[*] 50+ Parite Tarayıcı Motoru Başlatıldı ({len(symbols)} Parite).")
     async with aiohttp.ClientSession() as session:
         while True:
+            if BOT_PAUSED:
+                sys.stdout.write("\r⏸️ [DURDURULDU] Kaldıraç Botu kullanıcı isteğiyle geçici olarak durduruldu. Beklemede...   ")
+                sys.stdout.flush()
+                await asyncio.sleep(5)
+                continue
             cycle_start = time.time()
             try:
                 # 1. TradingView ve Haberleri Paralel Güncelle
