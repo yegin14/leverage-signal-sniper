@@ -488,6 +488,7 @@ function renderSistem(root) {
   const uptime = duration(state.generated_at - state.started_at);
   const facts = el("p", { class: "note", text:
     `Çalışma süresi: ${uptime}. CEX kasaları: ${v.cex || "erişilemiyor"}. DEX kasaları: ${v.dex}. Erişilen vadeli: ${v.perp.join(", ") || "yok"}. Erişilen spot: ${v.spot.join(", ") || "yok"}.` });
+  const feeds = el("p", { class: "note", text: `Canlı akışlar: ${state.feeds.map((f) => `${f.alive ? "✓" : "⚠"} ${f.venue}: ${f.alive ? `${f.symbols} parite, son mesaj ${duration(f.last_message_age)} önce` : (f.last_error || "bağlı değil")}`).join("  ·  ") || "yok"}. Sunucu gecikmesi: ${n1.format(state.loop_lag_ms)} ms.` });
   const errors = state.errors.length
     ? el("div", { class: "banner", text: `⚠ Veri sorunu: ${state.errors.join("; ")}` })
     : el("p", { class: "muted", text: "✓ Şu an bildirilen veri sorunu yok." });
@@ -500,7 +501,7 @@ function renderSistem(root) {
   ];
   const events = state.events.length ? el("ul", { class: "events" }, ...state.events.map((x) => el("li", null,
     el("time", { text: when(x.at) }), el("span", { class: "kind", text: x.kind }), el("span", { text: x.text })))) : el("p", { class: "empty", text: "Henüz olay yok." });
-  root.replaceChildren(card("Sistem", null, facts, errors),
+  root.replaceChildren(card("Sistem", null, facts, feeds, errors),
     card(`Geçmiş test (${e.measured_on})`, e.note, table(evidenceColumns, e.rows, "")),
     card("Olay günlüğü", null, events));
 }

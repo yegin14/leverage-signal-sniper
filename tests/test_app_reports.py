@@ -27,6 +27,7 @@ class FakeMarket:
     def __init__(self, price=100.0):
         self.price = price
         self.errors = {}
+        self.feeds = {}
         self.fail = False
         self.book_calls = 0
 
@@ -299,6 +300,57 @@ async def test_reachability_is_asked_again_and_reaches_the_scanner(tmp_path):
     assert bot.scanner.cex_venues == () and bot.perp_venues == []
 
 
+def test_rest_limit_is_hidden_while_the_live_feed_works_and_a_dead_feed_is_reported(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.market.errors = {"hyperliquid": "HTTP 429", "bybit": "retCode 10006"}
+    feed = SimpleNamespace(alive=lambda now=None: True, last_error=None)
+    bot.market.feeds = {"hyperliquid": feed}
+    assert bot.data_errors(time.time()) == ["bybit: retCode 10006"]
+    feed.alive = lambda now=None: False
+    feed.last_error = "HTTP 429"
+    errors = bot.data_errors(time.time())
+    assert "hyperliquid: HTTP 429" in errors
+    assert "hyperliquid canlı akışı kopuk: HTTP 429" in errors
+
+
+async def test_funding_strategy_survives_a_blocked_venue(tmp_path):
+    bot = make_bot(tmp_path)
+    asked = []
+
+    async def history(venue, symbol, limit=5):
+        asked.append(venue)
+        if venue == "binance":
+            raise DataError("binance", "HTTP 418")
+        return np.array([[0.0, 0.0001]])
+    bot.market.funding_history = history
+    assert len(await bot._funding_history("SOLUSDT")) == 1
+    assert asked == ["binance", "bybit"]
+
+
+async def test_bybit_limit_code_starts_a_wait():
+    market = Market(CountingSession())
+    with pytest.raises(DataError):
+        market._bybit_result({"retCode": 10006})
+    assert market.backoff_until["bybit"] > time.time()
+    with pytest.raises(DataError) as e:
+        await market.book("bybit", "SOLUSDT")
+    assert "bekleniyor" in str(e.value)
+    assert market.session.gets == 0
+
+
+async def test_filters_fall_back_to_saved_rules_when_rest_is_blocked():
+    market = Market(CountingSession())
+    f = await market.filters("hyperliquid", "SOLUSDT")
+    assert f.min_notional == 10.0 and f.qty_step == pytest.approx(0.01) and f.max_leverage == 20
+    banned = RateLimited({"Retry-After": "600"})
+    banned.status = 418
+    market = Market(CountingSession(banned))
+    f = await market.filters("binance", "BTCUSDT")
+    assert f.min_notional == 50.0 and f.qty_step == pytest.approx(0.001)
+    with pytest.raises(DataError):
+        await market.filters("binance", "NOPEUSDT")
+
+
 def test_saved_book_on_other_venue_is_not_reused(tmp_path):
     bot = make_bot(tmp_path)
     saved = {"news_cex": {**bot.books["news_cex"].state, "venue": "bybit", "balance": 5.0}}
@@ -315,7 +367,7 @@ def test_snapshot_round_trip(tmp_path):
     bot.save_local()
     data = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     assert data["books"]["news_cex"]["balance"] == 77.0
-    assert data["version"] == 3
+    assert data["version"] == 4
     assert data["events"][0]["text"] == "deneme"
     assert data["curve"][0]["e"]["news_cex"] == 77.0
 
@@ -482,12 +534,10 @@ async def test_fresh_signal_opens_its_books(tmp_path):
     bot = make_bot(tmp_path)
     s = strategy("trend_4h")
     closes = np.array(list(np.linspace(100, 200, 260)) + [215.0])
-    last_close_ms = time.time() * 1000 // 14_400_000 * 14_400_000
-    ts = last_close_ms - 14_400_000 * (len(closes) - np.arange(len(closes)))
+    closed_ms = time.time() * 1000 - 10_000  # The last bar closed ten seconds ago.
+    ts = closed_ms - 14_400_000 * (len(closes) - np.arange(len(closes)))
     bars = bars_from("SOLUSDT", Candles(ts, closes, closes + 0.2, closes - 0.2, closes, np.full(len(closes), 100.0)),
                      None, 14_400_000)
-    if time.time() - (bars.ts[-1] + bars.bar_ms) / 1000.0 > 300:
-        pytest.skip("Too far past the 4-hour boundary for a fresh signal.")
     await bot._after_bar(s, bars)
     assert len(bot.books["trend_4h_cex"].state["open"]) == 1
 

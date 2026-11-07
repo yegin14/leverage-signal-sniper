@@ -18,6 +18,7 @@ from . import reports, settings
 from .arbitrage import ArbLedger, ArbScanner
 from .costs import PERP_VENUES, breakeven_winrate, round_trip_cost_pct, sign
 from .desk import Candidate, Desk
+from .feeds import BinanceFeed, HyperliquidFeed
 from .news import NewsDesk
 from .paper import PaperBook, Plan, Quote
 from .signals import ema
@@ -41,8 +42,10 @@ FUNDING_CACHE_SECONDS = 60.0
 CURVE_SAMPLE_SECONDS = 300.0
 MAX_CURVE_POINTS = 1500
 MAX_EVENTS = 300
-# Hyperliquid candle requests are expensive, so their traded range refreshes less often.
-RANGE_REFRESH_SECONDS = {"binance": 10.0, "bybit": 10.0, "hyperliquid": 60.0}
+# Without a live feed, recent candles come from REST, which a shared server IP must use sparingly.
+RANGE_REFRESH_SECONDS = {"binance": 30.0, "bybit": 30.0, "hyperliquid": 60.0}
+FEED_WAIT_SECONDS = 8.0
+LAG_SAMPLE_SECONDS = 1.0
 TOP_OF_BOOK_SIZE = 1e12
 NEWS_SYMBOL_COOLDOWN_SECONDS = 3600.0
 # After a desk session the price must still be near the plan. Share of the stop distance.
@@ -50,7 +53,7 @@ MAX_ENTRY_DRIFT = 0.35
 # A signal older than this is not traded, for example right after a restart.
 MAX_SIGNAL_AGE_SECONDS = 300.0
 ASSUMED_REWARD_R_WITHOUT_TARGET = 2.0
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 
 @dataclass
@@ -125,6 +128,7 @@ class Bot:
         self.spot_venues: List[str] = []
         self.events: List[dict] = []
         self.curve: List[dict] = []
+        self.loop_lag_ms = 0.0
 
     # ---------------------------------------------------------------- setup and persistence
 
@@ -241,7 +245,10 @@ class Bot:
         return now - at if at else None
 
     def data_errors(self, now: float) -> List[str]:
-        out = [f"{k}: {v}" for k, v in self.market.errors.items()]
+        feeds = getattr(self.market, "feeds", {})
+        # A REST limit does not matter while the same venue's live feed is working.
+        out = [f"{k}: {v}" for k, v in self.market.errors.items() if not (k in feeds and feeds[k].alive(now))]
+        out += [f"{k} canlı akışı kopuk: {f.last_error or 'mesaj gelmiyor'}" for k, f in feeds.items() if not f.alive(now)]
         out += [f"{k}: {v['detail']}" for k, v in self.loop_errors.items() if now - v["at"] < 900.0]
         return out
 
@@ -277,7 +284,9 @@ class Bot:
         """Recent 1m candles for catching wicks, cached so polling stays cheap."""
         key = f"{venue}:{symbol}"
         cached = self.candle_cache.get(key)
-        if cached and time.time() - cached[0] < RANGE_REFRESH_SECONDS.get(venue, 10.0):
+        feed = getattr(self.market, "feeds", {}).get(venue)
+        # Reading a live feed costs nothing, so only REST answers are cached.
+        if cached and not (feed and feed.alive()) and time.time() - cached[0] < RANGE_REFRESH_SECONDS.get(venue, 30.0):
             return cached[1]
         minutes = int((time.time() * 1000 - oldest_ms) // 60_000) + 2
         try:
@@ -303,8 +312,19 @@ class Bot:
             if not self.cex_venue:
                 # The thresholds are for 8-hour rates, so hourly Hyperliquid rates cannot stand in.
                 raise DataError("strateji", "fonlama stratejisi CEX verisi ister")
-            funding = await self.market.funding_history(self.cex_venue, symbol)
+            funding = await self._funding_history(symbol)
         return bars_from(symbol, closed, funding, bar_ms)
+
+    async def _funding_history(self, symbol: str) -> np.ndarray:
+        """Funding rates are close across these venues, and the strategy needs only the latest."""
+        order = list(dict.fromkeys([self.cex_venue, "binance", "bybit"]))
+        error: Optional[DataError] = None
+        for venue in order:
+            try:
+                return await self.market.funding_history(venue, symbol)
+            except DataError as e:
+                error = e
+        raise error
 
     async def _signal_candles(self, symbol: str, interval: str, limit: int) -> Candles:
         """Candles from the first venue that answers. Signals are close enough across venues, and a
@@ -408,8 +428,14 @@ class Bot:
                 continue
             for symbol, positions in symbols.items():
                 top = tops.get(symbol)
-                if top:
-                    await self._update_symbol(venue, symbol, top, positions)
+                if not top:
+                    try:
+                        book = await self.market.book(venue, symbol, 5)
+                    except DataError as e:
+                        self.loop_errors[f"fiyat {venue}"] = {"at": time.time(), "detail": str(e)}
+                        continue
+                    top = (book.bids[0][0], book.asks[0][0])
+                await self._update_symbol(venue, symbol, top, positions)
 
     async def _update_symbol(self, venue: str, symbol: str, top: Tuple[float, float],
                              positions: List[Tuple[PaperBook, dict]]):
@@ -685,6 +711,25 @@ class Bot:
     async def _curve_step(self):
         self.sample_curve()
 
+    def start_feeds(self) -> List[asyncio.Task]:
+        for feed in (HyperliquidFeed(self.session, settings.SYMBOLS), BinanceFeed(self.session, settings.SYMBOLS)):
+            self.market.attach_feed(feed)
+        return [asyncio.create_task(f.run(), name=f"feed-{f.venue}") for f in self.market.feeds.values()]
+
+    async def _wait_for_feeds(self):
+        """Choosing a venue before its feed has spoken would judge it by a blocked REST API."""
+        deadline = time.time() + FEED_WAIT_SECONDS
+        while time.time() < deadline and not all(f.alive() and f.levels for f in self.market.feeds.values()):
+            await asyncio.sleep(0.5)
+
+    async def _measure_loop_lag(self):
+        """How late the event loop wakes up. High values mean the server's CPU is not keeping up."""
+        while True:
+            start = time.perf_counter()
+            await asyncio.sleep(LAG_SAMPLE_SECONDS)
+            lag = (time.perf_counter() - start - LAG_SAMPLE_SECONDS) * 1000.0
+            self.loop_lag_ms = max(lag, self.loop_lag_ms * 0.95)
+
     async def serve_panel(self):
         runner = web.AppRunner(make_app(self))
         await runner.setup()
@@ -692,9 +737,13 @@ class Bot:
 
     async def run(self):
         await self.serve_panel()
+        feed_tasks = self.start_feeds()
+        await self._wait_for_feeds()
         await self.setup()
         await self.telegram.send(reports.format_startup(self), keyboard=True)
         await asyncio.gather(
+            *feed_tasks,
+            self._measure_loop_lag(),
             self.telegram.poll_forever(),
             self._desk_worker(),
             self._forever("strateji", STRATEGY_POLL_SECONDS, self.scan_strategies),

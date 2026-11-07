@@ -126,6 +126,8 @@ def build_state(bot, now: float) -> dict:
         "started_at": bot.started_at,
         "panel_note": reports.PAPER_NOTE,
         "venues": {"cex": bot.cex_venue, "dex": settings.DEX_VENUE, "perp": bot.perp_venues, "spot": bot.spot_venues},
+        "feeds": [f.status(now) for f in getattr(bot.market, "feeds", {}).values()],
+        "loop_lag_ms": round(bot.loop_lag_ms, 1),
         "errors": bot.data_errors(now),
         "sources": [{"key": k, "label": v} for k, v in SOURCE_LABELS.items()],
         "limits": {"risk_per_trade_usd": bot.limits.risk_per_trade_usd, "max_leverage": bot.limits.max_leverage},
@@ -216,6 +218,9 @@ def make_app(bot) -> web.Application:
         return web.json_response({
             "ok": True, "mode": "paper", "uptime_hours": round((now - bot.started_at) / 3600.0, 2),
             "cex": bot.cex_venue, "dex": settings.DEX_VENUE, "errors": bot.data_errors(now),
+            "reachable": {"perp": bot.perp_venues, "spot": bot.spot_venues},
+            "feeds": [f.status(now) for f in getattr(bot.market, "feeds", {}).values()],
+            "loop_lag_ms": round(bot.loop_lag_ms, 1),
             "books": sanitize({k: {x: b.stats()[x] for x in ("balance", "equity", "trades", "net", "open")}
                                for k, b in bot.books.items()}),
             "news_items": len(bot.news.items),

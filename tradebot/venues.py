@@ -13,6 +13,7 @@ import aiohttp
 import numpy as np
 
 from .risk import Filters
+from .venue_meta import FALLBACK_FILTERS
 
 BINANCE_FAPI = "https://fapi.binance.com"
 BINANCE_SPOT = "https://api.binance.com"
@@ -22,6 +23,9 @@ HYPERLIQUID = "https://api.hyperliquid.xyz/info"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; LeverageSignalSniper/2.0)"}
 HL_MIN_NOTIONAL = 10.0
 DEFAULT_BACKOFF_SECONDS = 60.0
+# Bybit answers its IP limit with HTTP 200 and a code. Its window is a few seconds long.
+BYBIT_RATE_LIMIT_CODES = (10006, 10018)
+BYBIT_BACKOFF_SECONDS = 15.0
 MAX_BACKOFF_SECONDS = 3600.0
 BYBIT_INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240"}
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
@@ -83,6 +87,7 @@ class Market:
         self._filters: Dict[str, Filters] = {}
         self._hl_ctx: tuple = (0.0, None)
         self.backoff_until: Dict[str, float] = {}
+        self.feeds: Dict[str, object] = {}
         self.errors: Dict[str, str] = {}
 
     # ---------------------------------------------------------------- transport
@@ -141,15 +146,27 @@ class Market:
         self.errors.pop(source, None)
         return data
 
-    @staticmethod
-    def _bybit_result(data: dict) -> dict:
-        if data.get("retCode") != 0:
-            raise DataError("bybit", f"retCode {data.get('retCode')}")
+    def attach_feed(self, feed) -> None:
+        self.feeds[feed.venue] = feed
+
+    def _bybit_result(self, data: dict) -> dict:
+        code = data.get("retCode")
+        if code != 0:
+            if code in BYBIT_RATE_LIMIT_CODES:
+                self.backoff_until["bybit"] = time.time() + BYBIT_BACKOFF_SECONDS
+            detail = f"retCode {code}"
+            self.errors["bybit"] = detail
+            raise DataError("bybit", detail)
         return data["result"]
 
     # ---------------------------------------------------------------- order books
 
     async def book(self, venue: str, symbol: str, depth: int = 20) -> Book:
+        feed = self.feeds.get(venue)
+        if feed:
+            live = feed.book(symbol, depth)
+            if live:
+                return live
         if venue == "binance":
             d = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/depth", {"symbol": symbol, "limit": depth})
             bids, asks = _levels(d["bids"]), _levels(d["asks"])
@@ -169,7 +186,12 @@ class Market:
         return Book(venue, symbol, bids, asks, time.time())
 
     async def tops(self, venue: str) -> Dict[str, Tuple[float, float]]:
-        """Best bid and ask of every symbol in one request. Hyperliquid gives the mid for both."""
+        """Best bid and ask of every symbol in one request. Hyperliquid REST gives the mid for both."""
+        feed = self.feeds.get(venue)
+        if feed:
+            live = feed.tops()
+            if live:
+                return live
         if venue == "binance":
             rows = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/ticker/bookTicker")
             return {r["symbol"]: (float(r["bidPrice"]), float(r["askPrice"])) for r in rows}
@@ -201,6 +223,11 @@ class Market:
     # ---------------------------------------------------------------- candles
 
     async def candles(self, venue: str, symbol: str, interval: str, limit: int = 200) -> Candles:
+        feed = self.feeds.get(venue)
+        if feed and interval == "1m":
+            live = feed.candles(symbol, limit)
+            if live is not None:
+                return live
         if venue == "binance":
             raw = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/klines",
                                   {"symbol": symbol, "interval": interval, "limit": limit})
@@ -226,6 +253,11 @@ class Market:
     # ---------------------------------------------------------------- funding
 
     async def funding(self, venue: str, symbol: str) -> Funding:
+        feed = self.feeds.get(venue)
+        if feed:
+            live = feed.funding(symbol)
+            if live:
+                return live
         if venue == "binance":
             d = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/premiumIndex", {"symbol": symbol})
             return Funding(float(d["lastFundingRate"]), float(d["nextFundingTime"]) / 1000.0)
@@ -257,7 +289,12 @@ class Market:
         at, cached = self._hl_ctx
         if cached is not None and time.time() - at < 120.0:
             return cached
-        meta, ctxs = await self._hl({"type": "metaAndAssetCtxs"})
+        try:
+            meta, ctxs = await self._hl({"type": "metaAndAssetCtxs"})
+        except DataError:
+            if cached is not None:
+                return cached  # Slightly old funding beats none.
+            raise
         cached = {u["name"]: {**c, "szDecimals": u["szDecimals"], "maxLeverage": u["maxLeverage"]}
                   for u, c in zip(meta["universe"], ctxs)}
         self._hl_ctx = (time.time(), cached)
@@ -269,6 +306,15 @@ class Market:
         key = f"{venue}:{symbol}"
         if key in self._filters:
             return self._filters[key]
+        try:
+            return await self._live_filters(venue, symbol, key)
+        except DataError:
+            row = FALLBACK_FILTERS.get(venue, {}).get(symbol)
+            if row is None:
+                raise
+            return Filters(row[0], row[1], 0.0, row[2])
+
+    async def _live_filters(self, venue: str, symbol: str, key: str) -> Filters:
         if venue == "binance":
             info = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/exchangeInfo", timeout=15.0)
             for s in info["symbols"]:
