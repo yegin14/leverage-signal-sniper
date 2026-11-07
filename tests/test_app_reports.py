@@ -5,14 +5,14 @@ import numpy as np
 import pytest
 
 from tradebot import reports
-from tradebot.app import Bot, DeskRequest, bars_from, build_plan, drift_is_acceptable
+from tradebot.app import Bot, DeskRequest, bars_from, build_plan, drift_is_acceptable, venue_with_results
 from tradebot.desk import Desk
 from tradebot.paper import PaperBook, Plan, Quote
 from tradebot.risk import Filters
 from tradebot.settings import LIMITS
 from tradebot.strategies import FUNDING_EXITS, LIVE_STRATEGIES, TREND_4H_EXITS, funding_contrarian, trend_breakout
 from tradebot.telegram import BACKUP_FILENAME, COMMANDS, KEYBOARD, Telegram, normalize_command
-from tradebot.venues import Book, Candles, DataError
+from tradebot.venues import Book, Candles, DataError, Market
 
 FILTERS = Filters(5.0, 0.001)
 NOW = 1_800_000_000.0
@@ -148,6 +148,67 @@ def test_four_paper_books_with_separate_venues(tmp_path):
     assert set(bot.books) == {"rules_cex", "rules_dex", "desk_cex", "desk_dex"}
     assert bot.books["rules_dex"].venue.name == "hyperliquid"
     assert bot.books["desk_cex"].venue.name == "binance"
+
+
+def test_venue_with_results_keeps_a_book_on_its_venue():
+    assert venue_with_results(None) is None
+    assert venue_with_results({"rules_cex": {"venue": "bybit", "history": [], "open": []}}) is None
+    assert venue_with_results({"rules_cex": {"venue": "bybit", "history": [{"net": 1}], "open": []}}) == "bybit"
+    assert venue_with_results({"desk_cex": {"venue": "binance", "history": [], "open": [{"symbol": "S"}]}}) == "binance"
+
+
+async def test_pick_cex_retries_before_giving_up_on_binance():
+    market = Market(None)
+    calls = []
+
+    async def flaky(venue, symbol, depth=20):
+        calls.append(venue)
+        if len(calls) == 1:
+            raise DataError(venue, "TimeoutError")
+        return Book(venue, symbol, [[1, 1]], [[2, 1]], 0.0)
+    market.book = flaky
+    assert await market.pick_cex("auto", retry_seconds=0) == "binance"
+    assert calls == ["binance", "binance"]
+
+
+async def test_pick_cex_falls_back_when_binance_stays_blocked():
+    market = Market(None)
+
+    async def blocked(venue, symbol, depth=20):
+        if venue == "binance":
+            raise DataError(venue, "HTTP 451")
+        return Book(venue, symbol, [[1, 1]], [[2, 1]], 0.0)
+    market.book = blocked
+    assert await market.pick_cex("auto", retry_seconds=0) == "bybit"
+
+
+class RateLimited:
+    status = 429
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class CountingSession:
+    def __init__(self):
+        self.posts = 0
+
+    def post(self, *args, **kwargs):
+        self.posts += 1
+        return RateLimited()
+
+
+async def test_hyperliquid_rate_limit_stops_requests_for_a_while():
+    session = CountingSession()
+    market = Market(session)
+    for _ in range(3):
+        with pytest.raises(DataError):
+            await market.book("hyperliquid", "SOLUSDT")
+    assert session.posts == 1
+    assert "429" in market.errors["hyperliquid"]
 
 
 def test_saved_book_on_other_venue_is_not_reused(tmp_path):

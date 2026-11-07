@@ -76,6 +76,15 @@ def build_plan(symbol: str, direction: str, reference: float, signal_atr: float,
                 session_id, exits.trail_atr, hours, exits.max_hold_hours)
 
 
+def venue_with_results(saved_books: Optional[dict]) -> Optional[str]:
+    """The CEX venue of a saved book that has trades or open positions, if any."""
+    for name in ("rules_cex", "desk_cex"):
+        state = (saved_books or {}).get(name)
+        if state and (state.get("history") or state.get("open")):
+            return state.get("venue")
+    return None
+
+
 def drift_is_acceptable(direction: str, planned_price: float, current_price: float, stop_distance: float) -> bool:
     """False if price ran away in the trade's direction or already fell most of the way to the stop."""
     moved = (current_price - planned_price) * sign(direction)
@@ -154,11 +163,15 @@ class Bot:
         return max(candidates, key=lambda s: s.get("saved_at", 0)) if candidates else None
 
     async def setup(self):
-        self.cex_venue = await self.market.pick_cex(settings.CEX_VENUE)
+        saved = await self.load_state()
+        saved_books = (saved or {}).get("books")
+        # A book with results stays on its venue: changing venue would discard them.
+        self.cex_venue = venue_with_results(saved_books) if settings.CEX_VENUE == "auto" else None
+        if not self.cex_venue:
+            self.cex_venue = await self.market.pick_cex(settings.CEX_VENUE)
         if not self.cex_venue:
             logger.error("No CEX reachable: CEX books are off")
-        saved = await self.load_state()
-        self._make_books((saved or {}).get("books"))
+        self._make_books(saved_books)
         if saved:
             self.news = NewsDesk(saved.get("news"))
             if saved.get("desk"):
