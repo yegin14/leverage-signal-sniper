@@ -2,25 +2,20 @@ services:
   - type: web
     name: leverage-signal-sniper
     runtime: docker
-    region: virginia
+    region: frankfurt
     plan: free
     healthCheckPath: /
     envVars:
       - key: PORT
         value: "8080"
-      - key: ACCOUNT_SIZE_USD
-        value: "1000.0"
-      - key: MAX_RISK_PER_TRADE_USD
-        value: "20.0"
-      - key: TOP_SYMBOLS_COUNT
-        value: "50"
-      - key: SCAN_INTERVAL_SECONDS
-        value: "3.0"
-      - key: MIN_RVOL
-        value: "1.20"
-      - key: MIN_CONFIDENCE_SCORE
-        value: "65"
+      # Secrets are entered in the Render dashboard and never committed.
       - key: TELEGRAM_BOT_TOKEN
-        value: "9255550428:AAFUnIhge5_tWy0odDvtorm-xRWSWX_R2CI"
+        sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DESK_MODEL
+        value: claude-opus-5-5
+      - key: DESK_DAILY_BUDGET_USD
+        value: "1.0"

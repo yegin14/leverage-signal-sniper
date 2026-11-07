@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 paper_trading_state.json
+data/
