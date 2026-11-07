@@ -212,6 +212,9 @@ async def test_pick_cex_falls_back_when_binance_stays_blocked():
 class RateLimited:
     status = 429
 
+    def __init__(self, headers=None):
+        self.headers = headers or {}
+
     async def __aenter__(self):
         return self
 
@@ -220,12 +223,18 @@ class RateLimited:
 
 
 class CountingSession:
-    def __init__(self):
+    def __init__(self, response=None):
         self.posts = 0
+        self.gets = 0
+        self.response = response or RateLimited()
 
     def post(self, *args, **kwargs):
         self.posts += 1
-        return RateLimited()
+        return self.response
+
+    def get(self, *args, **kwargs):
+        self.gets += 1
+        return self.response
 
 
 async def test_hyperliquid_rate_limit_stops_requests_for_a_while():
@@ -236,6 +245,58 @@ async def test_hyperliquid_rate_limit_stops_requests_for_a_while():
             await market.book("hyperliquid", "SOLUSDT")
     assert session.posts == 1
     assert "429" in market.errors["hyperliquid"]
+
+
+async def test_binance_ban_stops_requests_for_as_long_as_it_asks():
+    banned = RateLimited({"Retry-After": "600"})
+    banned.status = 418
+    session = CountingSession(banned)
+    market = Market(session)
+    for _ in range(3):
+        with pytest.raises(DataError):
+            await market.book("binance", "SOLUSDT")
+    assert session.gets == 1
+    assert "418" in market.errors["binance"]
+    assert market.backoff_until["binance"] - time.time() > 500
+    # Another venue is not affected by Binance's ban.
+    assert time.time() >= market.backoff_until.get("bybit", 0.0)
+
+
+async def test_a_ban_with_an_unreadable_wait_still_waits():
+    banned = RateLimited({"Retry-After": "soon"})
+    banned.status = 418
+    market = Market(CountingSession(banned))
+    with pytest.raises(DataError):
+        await market.book("binance", "SOLUSDT")
+    assert market.backoff_until["binance"] > time.time()
+
+
+async def test_signals_survive_a_blocked_venue(tmp_path):
+    bot = make_bot(tmp_path)
+    asked = []
+    original = bot.market.candles
+
+    async def blocked(venue, symbol, interval, limit=200):
+        asked.append(venue)
+        if venue == "binance":
+            raise DataError("binance", "HTTP 418")
+        return await original(venue, symbol, interval, limit)
+    bot.market.candles = blocked
+    bars = await bot._bars("SOLUSDT", strategy("trend_4h"))
+    assert len(bars.ts) > 0
+    assert asked == ["binance", "bybit"]
+
+
+async def test_reachability_is_asked_again_and_reaches_the_scanner(tmp_path):
+    from tradebot.arbitrage import ArbScanner
+    bot = make_bot(tmp_path)
+    bot.scanner = ArbScanner(bot.market, None, bot.arb, [], [])
+    bot.market.spot_book = bot.market.book
+    await bot.refresh_reachability()
+    assert bot.scanner.cex_venues == ("binance", "bybit")
+    bot.market.fail = True
+    await bot.refresh_reachability()
+    assert bot.scanner.cex_venues == () and bot.perp_venues == []
 
 
 def test_saved_book_on_other_venue_is_not_reused(tmp_path):

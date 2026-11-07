@@ -21,7 +21,8 @@ HYPERLIQUID = "https://api.hyperliquid.xyz/info"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; LeverageSignalSniper/2.0)"}
 HL_MIN_NOTIONAL = 10.0
-HL_BACKOFF_SECONDS = 30.0
+DEFAULT_BACKOFF_SECONDS = 60.0
+MAX_BACKOFF_SECONDS = 3600.0
 BYBIT_INTERVAL = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240"}
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
 
@@ -81,15 +82,32 @@ class Market:
         self.session = session
         self._filters: Dict[str, Filters] = {}
         self._hl_ctx: tuple = (0.0, None)
-        self.hl_backoff_until = 0.0
+        self.backoff_until: Dict[str, float] = {}
         self.errors: Dict[str, str] = {}
 
     # ---------------------------------------------------------------- transport
 
+    def _check_backoff(self, source: str) -> None:
+        """A venue that said 418 or 429 gets no request until its wait is over. Asking again during
+        a ban makes it longer, and Binance can extend it to days."""
+        if time.time() < self.backoff_until.get(source, 0.0):
+            raise DataError(source, f"{self.errors.get(source, 'sınır')}, bekleniyor")
+
+    def _note_rate_limit(self, source: str, response) -> None:
+        if response.status not in (418, 429):
+            return
+        try:
+            wait = float(response.headers.get("Retry-After", DEFAULT_BACKOFF_SECONDS))
+        except ValueError:
+            wait = DEFAULT_BACKOFF_SECONDS
+        self.backoff_until[source] = time.time() + min(max(wait, DEFAULT_BACKOFF_SECONDS), MAX_BACKOFF_SECONDS)
+
     async def _get(self, source: str, url: str, params: Optional[dict] = None, timeout: float = 8.0):
+        self._check_backoff(source)
         try:
             async with self.session.get(url, params=params, headers=HEADERS,
                                         timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                self._note_rate_limit(source, r)
                 if r.status != 200:
                     raise DataError(source, f"HTTP {r.status}")
                 data = await r.json(content_type=None)
@@ -105,14 +123,11 @@ class Market:
 
     async def _hl(self, body: dict, timeout: float = 8.0):
         source = "hyperliquid"
-        if time.time() < self.hl_backoff_until:
-            raise DataError(source, "HTTP 429, bekleniyor")
+        self._check_backoff(source)
         try:
             async with self.session.post(HYPERLIQUID, json=body, headers=HEADERS,
                                          timeout=aiohttp.ClientTimeout(total=timeout)) as r:
-                if r.status == 429:
-                    # Asking again at once only prolongs the limit.
-                    self.hl_backoff_until = time.time() + HL_BACKOFF_SECONDS
+                self._note_rate_limit(source, r)
                 if r.status != 200:
                     raise DataError(source, f"HTTP {r.status}")
                 data = await r.json(content_type=None)

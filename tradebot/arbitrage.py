@@ -238,6 +238,7 @@ class ArbLedger:
         k["last_scan_at"] = now
         k["last_error"] = None
         if best is None:
+            k["last_net_bps"] = k["last_gross_bps"] = k["last_pair"] = None
             return
         k["last_net_bps"], k["last_gross_bps"] = best.net_bps, best.gross_bps
         k["last_pair"] = f"{best.symbol}: {best.buy_at} al, {best.sell_at} sat"
@@ -344,6 +345,10 @@ class ArbScanner:
             book_edge(kind, symbol, a, b, self.notional, fa, fb, close_fee_pct=fa + fb),
             book_edge(kind, symbol, b, a, self.notional, fb, fa, close_fee_pct=fa + fb),
         ])
+
+    def set_venues(self, perp: Sequence[str], spot: Sequence[str]) -> None:
+        self.cex_venues = tuple(perp)
+        self.spot_venues = tuple(spot)
 
     async def scan_perps(self, symbols: Sequence[str], now: Optional[float] = None):
         venues = (*self.cex_venues, "hyperliquid")

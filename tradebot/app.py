@@ -36,6 +36,7 @@ PERSIST_SECONDS = 30.0
 BACKUP_SECONDS = 600.0
 BACKUP_CHECK_SECONDS = 20.0
 KEEP_AWAKE_SECONDS = 600.0
+REACHABILITY_SECONDS = 900.0
 FUNDING_CACHE_SECONDS = 60.0
 CURVE_SAMPLE_SECONDS = 300.0
 MAX_CURVE_POINTS = 1500
@@ -193,9 +194,14 @@ class Bot:
             self.news_cooldown = saved.get("news_cooldown", {})
             self.events = saved.get("events", [])
             self.curve = saved.get("curve", [])
+        self.scanner = ArbScanner(self.market, self.session, self.arb, [], [])
+        await self.refresh_reachability()
+
+    async def refresh_reachability(self):
+        """A shared server IP can be blocked and released at any time, so this is asked again."""
         self.perp_venues = [v for v in ("binance", "bybit") if await self._reachable(v)]
         self.spot_venues = [v for v in ("binance", "bybit") if await self._spot_reachable(v)]
-        self.scanner = ArbScanner(self.market, self.session, self.arb, self.perp_venues, self.spot_venues)
+        self.scanner.set_venues(self.perp_venues, self.spot_venues)
 
     async def _reachable(self, venue: str) -> bool:
         try:
@@ -289,7 +295,7 @@ class Bot:
         return self.cex_venue or settings.DEX_VENUE
 
     async def _bars(self, symbol: str, strategy: LiveStrategy) -> Bars:
-        candles = await self.market.candles(self.signal_venue, symbol, strategy.interval, strategy.bars_needed)
+        candles = await self._signal_candles(symbol, strategy.interval, strategy.bars_needed)
         bar_ms = int(strategy.hours * 3_600_000)
         closed = candles.closed(time.time() * 1000, bar_ms)
         funding = None
@@ -299,6 +305,18 @@ class Bot:
                 raise DataError("strateji", "fonlama stratejisi CEX verisi ister")
             funding = await self.market.funding_history(self.cex_venue, symbol)
         return bars_from(symbol, closed, funding, bar_ms)
+
+    async def _signal_candles(self, symbol: str, interval: str, limit: int) -> Candles:
+        """Candles from the first venue that answers. Signals are close enough across venues, and a
+        blocked venue must not leave every book without signals."""
+        order = list(dict.fromkeys([self.signal_venue, "binance", "bybit", settings.DEX_VENUE]))
+        error: Optional[DataError] = None
+        for venue in order:
+            try:
+                return await self.market.candles(venue, symbol, interval, limit)
+            except DataError as e:
+                error = e
+        raise error
 
     async def scan_strategies(self):
         now_ms = time.time() * 1000
@@ -312,7 +330,7 @@ class Bot:
                 try:
                     bars = await self._bars(symbol, strategy)
                 except DataError as e:
-                    self.loop_errors[f"strateji {symbol}"] = {"at": time.time(), "detail": str(e)}
+                    self.loop_errors["strateji verisi"] = {"at": time.time(), "detail": f"{symbol}: {e}"}
                     continue
                 if len(bars.ts) == 0 or bars.ts[-1] < last_closed_open:
                     continue  # The venue has not published the new bar yet.
@@ -442,7 +460,7 @@ class Bot:
             direction = "LONG" if item.sentiment > 0 else "SHORT"
             for symbol in item.symbols:
                 try:
-                    candles = await self.market.candles(self.signal_venue, symbol, "1h", 250)
+                    candles = await self._signal_candles(symbol, "1h", 250)
                 except DataError as e:
                     self.news.record_action(item.id, {"symbol": symbol, "direction": direction, "opened": [],
                                                       "rejected": {"hepsi": f"veri yok: {e}"}})
@@ -569,7 +587,7 @@ class Bot:
                     continue
                 self.news_cooldown[symbol] = now
                 try:
-                    candles = await self.market.candles(self.signal_venue, symbol, "1h", 250)
+                    candles = await self._signal_candles(symbol, "1h", 250)
                 except DataError:
                     continue
                 bars = bars_from(symbol, candles.closed(now * 1000, 3_600_000), None, 3_600_000)
@@ -687,6 +705,7 @@ class Bot:
             self._forever("kayıt", PERSIST_SECONDS, self._persist_step),
             self._forever("grafik", CURVE_SAMPLE_SECONDS, self._curve_step),
             self._forever("uyanık", KEEP_AWAKE_SECONDS, self._keep_awake_step),
+            self._forever("erişim", REACHABILITY_SECONDS, self.refresh_reachability),
             self._backup_loop(),
             self._digest_loop(),
         )

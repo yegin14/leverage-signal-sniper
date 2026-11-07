@@ -119,6 +119,8 @@ def test_ledger_observe_tracks_best_and_positive_count():
     assert k["scans"] == 3 and k["positive"] == 1
     assert k["best_net_bps"] == pytest.approx(60.0)
     assert k["last_scan_at"] == 3.0
+    # A scan that found nothing must not leave old numbers looking current.
+    assert k["last_net_bps"] is None and k["last_pair"] is None
 
 
 def test_book_instant_updates_balance_by_net():

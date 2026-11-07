@@ -15,6 +15,9 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Binance blocks this shared server IP from time to time with HTTP 418.
+      - key: CEX_VENUE
+        value: bybit
       - key: DESK_MODEL
         value: claude-opus-5-5
       - key: DESK_DAILY_BUDGET_USD
