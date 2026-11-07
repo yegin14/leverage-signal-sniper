@@ -527,8 +527,6 @@ class Bot:
             await asyncio.sleep(BACKUP_CHECK_SECONDS)
             if self.backup_dirty or time.time() - last >= BACKUP_SECONDS:
                 self.backup_dirty = False
-        self.perp_venues: List[str] = []
-        self.spot_venues: List[str] = []
                 last = time.time()
                 try:
                     await self.backup_now()
