@@ -1,8 +1,8 @@
-"""Telegram: commands, notifications, and a state backup that survives free-plan redeploys.
+"""Telegram: a short status, the panel link, important warnings, and a state backup.
 
-Commands match exactly, so an unrelated message cannot trigger a report. Only the owner's chat is
-served. Queued messages older than two minutes are ignored, so an old /sifirla cannot fire after a
-restart. If a report cannot be built, the user is told, and no partial numbers are shown.
+Trade-by-trade detail lives on the web panel so the chat stays readable. Commands match exactly, so
+an unrelated message cannot trigger a report. Only the owner's chat is served. Queued messages
+older than two minutes are ignored, so an old /sifirla cannot fire after a restart.
 """
 
 import asyncio
@@ -27,22 +27,16 @@ RESTORE_RETRY_SECONDS = 5.0
 COMMANDS = {
     "/start": "help", "/help": "help", "yardım": "help",
     "/durum": "status", "durum": "status", "📊 durum": "status",
-    "/pozisyon": "positions", "pozisyon": "positions", "📌 pozisyon": "positions",
-    "/islemler": "trades", "işlemler": "trades", "🧾 işlemler": "trades",
-    "/masa": "desk", "masa": "desk", "🧠 masa": "desk",
-    "/haber": "news", "haber": "news", "📰 haber": "news",
-    "/arbitraj": "arb", "arbitraj": "arb", "💱 arbitraj": "arb",
-    "/maliyet": "costs", "maliyet": "costs", "💸 maliyet": "costs",
-    "/test": "gate", "🧪 test": "gate",
-    "/kanit": "evidence", "kanıt": "evidence", "📚 kanıt": "evidence",
+    "/panel": "panel", "panel": "panel", "🌐 panel": "panel",
     "/sifirla": "reset_ask", "sıfırla": "reset_ask",
     "/sifirla onay": "reset_do",
+    # These moved to the panel. Old habits get a pointer instead of "unknown command".
+    "/pozisyon": "panel", "/islemler": "panel", "/masa": "panel", "/haber": "panel",
+    "/arbitraj": "panel", "/maliyet": "panel", "/test": "panel", "/kanit": "panel",
 }
 
 KEYBOARD = {
-    "keyboard": [[{"text": "📊 Durum"}, {"text": "📌 Pozisyon"}, {"text": "🧾 İşlemler"}],
-                 [{"text": "🧠 Masa"}, {"text": "📰 Haber"}, {"text": "💱 Arbitraj"}],
-                 [{"text": "💸 Maliyet"}, {"text": "🧪 Test"}, {"text": "📚 Kanıt"}]],
+    "keyboard": [[{"text": "📊 Durum"}, {"text": "🌐 Panel"}]],
     "resize_keyboard": True,
     "is_persistent": True,
 }
@@ -98,25 +92,11 @@ class Telegram:
         command = COMMANDS.get(normalize_command(text))
         bot = self.bot
         if command == "help":
-            return reports.format_help(bot)
+            return reports.format_help()
         if command == "status":
             return reports.format_status(bot)
-        if command == "positions":
-            return reports.format_positions(bot)
-        if command == "trades":
-            return reports.format_trades(bot)
-        if command == "desk":
-            return reports.format_session(bot.last_session())
-        if command == "news":
-            return reports.format_news(bot)
-        if command == "arb":
-            return reports.format_arbitrage(bot)
-        if command == "costs":
-            return reports.format_costs(bot)
-        if command == "gate":
-            return reports.format_gate(bot)
-        if command == "evidence":
-            return reports.format_evidence()
+        if command == "panel":
+            return reports.panel_line()
         if command == "reset_ask":
             return ("⚠️ Bu komut tüm sahte kasaları, işlem geçmişini ve arbitraj ölçümlerini siler. Yapay zeka harcama "
                     "kaydı silinmez. Onay için yazın: /sifirla onay")

@@ -32,7 +32,7 @@ class Plan:
     size_factor: float = 1.0
     session_id: Optional[str] = None
     trail_atr: Optional[float] = None
-    bar_hours: int = 1
+    bar_hours: float = 1
     max_hold_hours: Optional[float] = None
 
 
@@ -127,6 +127,8 @@ class PaperBook:
             "max_drawdown": self.state["max_drawdown"],
             "balance": self.state["balance"],
             "equity": self.equity(),
+            "unrealized": self.unrealized(),
+            "rejected": dict(self.state["rejected"]),
             "open": len(self.state["open"]),
             "days": days,
             "costs": dict(self.state["costs"]),
@@ -227,7 +229,7 @@ class PaperBook:
         self._update_drawdown({symbol: quote.mid})
         return closed
 
-    def update_trail(self, symbol: str, bar_hours: int, close: float, atr: float, now: Optional[float] = None) -> None:
+    def update_trail(self, symbol: str, bar_hours: float, close: float, atr: float, now: Optional[float] = None) -> None:
         """Moves trailing stops after a bar closes. A stop only ever moves toward profit."""
         now = time.time() if now is None else now
         for p in self.state["open"]:
@@ -267,24 +269,35 @@ class PaperBook:
         p["next_funding_ts"] = quote.funding_next_ts
         p["pending_funding_rate"] = quote.funding_rate
 
-    def _check_exit(self, p: dict, quote: Quote) -> Optional[dict]:
+    def exit_signal(self, p: dict, quote: Quote) -> Optional[str]:
+        """Which exit this quote triggers: "stop", "target", "time" or None. Fills nothing."""
         s = sign(p["direction"])
-        exit_levels = quote.bids if s > 0 else quote.asks
-        if not exit_levels:
+        levels = quote.bids if s > 0 else quote.asks
+        if not levels:
             return None
-        touch = exit_levels[0][0]
+        touch = levels[0][0]
         low = min(x for x in (quote.low, touch) if x is not None)
         high = max(x for x in (quote.high, touch) if x is not None)
         adverse, favorable = (low, high) if s > 0 else (high, low)
-
         if (adverse - p["stop"]) * s <= 0:
-            return self._exit_stop(p, quote, exit_levels)
+            return "stop"
         # A resting limit needs a trade strictly through its price.
         if p["target"] is not None and (favorable - p["target"]) * s > 0:
-            return self._close(p, p["target"], is_maker=True, reason="hedef", slippage=0.0, now=quote.ts)
+            return "target"
         if quote.ts - p["opened_at"] >= p["max_hold_hours"] * 3600.0:
-            return self._exit_market(p, quote, exit_levels, "süre doldu")
+            return "time"
         return None
+
+    def _check_exit(self, p: dict, quote: Quote) -> Optional[dict]:
+        kind = self.exit_signal(p, quote)
+        if kind is None:
+            return None
+        levels = quote.bids if sign(p["direction"]) > 0 else quote.asks
+        if kind == "stop":
+            return self._exit_stop(p, quote, levels)
+        if kind == "target":
+            return self._close(p, p["target"], is_maker=True, reason="hedef", slippage=0.0, now=quote.ts)
+        return self._exit_market(p, quote, levels, "süre doldu")
 
     def _exit_stop(self, p: dict, quote: Quote, levels) -> dict:
         s = sign(p["direction"])
@@ -350,5 +363,6 @@ class PaperBook:
         equity = self.equity(marks)
         self.state["peak_equity"] = max(self.state["peak_equity"], equity)
         self.state["max_drawdown"] = max(self.state["max_drawdown"], self.state["peak_equity"] - equity)
-        if equity <= self.limits.capital_usd - self.limits.kill_drawdown_usd and not self.state["halted"]:
+        kill = self.limits.kill_drawdown_usd
+        if kill > 0 and equity <= self.limits.capital_usd - kill and not self.state["halted"]:
             self.state["halted"] = f"özsermaye {equity:.2f}$ zarar limitine indi"

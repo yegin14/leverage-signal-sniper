@@ -8,11 +8,15 @@ from .costs import VenueCosts, floor_to_step, sign
 from .settings import RiskLimits
 
 
+LIQUIDATION_STOP_RATIO = 2.0
+
+
 @dataclass(frozen=True)
 class Filters:
     min_notional: float
     qty_step: float
     tick: float = 0.0
+    max_leverage: Optional[int] = None  # None: the venue allows more than the risk limit does
 
 
 @dataclass(frozen=True)
@@ -62,8 +66,14 @@ def size_position(
         return Rejected(
             f"pozisyon çok küçük: {notional:.2f}$ < borsa alt sınırı {filters.min_notional:.2f}$"
         )
-    margin_target = max(equity, 1e-9) * limits.max_margin_per_trade_pct / 100.0
-    leverage = int(min(max(math.ceil(notional / margin_target), 1), limits.max_leverage))
+    # Lowest leverage that fits, rising to the cap as free margin runs low. On isolated margin the
+    # most a trade can lose is its margin, so higher leverage only matters if liquidation comes
+    # before the stop. The cap therefore keeps liquidation at least twice as far as the stop.
+    margin_target = max(min(equity * limits.max_margin_per_trade_pct / 100.0, free_margin), 1e-9)
+    stop_fraction = distance / entry
+    safe = int(1.0 / (LIQUIDATION_STOP_RATIO * stop_fraction + venue.maintenance_pct / 100.0))
+    cap = max(1, min(limits.max_leverage, safe, filters.max_leverage or limits.max_leverage))
+    leverage = int(min(max(math.ceil(notional / margin_target), 1), cap))
     margin = notional / leverage
     if margin > free_margin:
         return Rejected(f"serbest teminat yetersiz: gerekli {margin:.2f}$, serbest {free_margin:.2f}$")
@@ -85,16 +95,16 @@ def entry_block_reason(
     """Why a new entry is not allowed, or None when it is."""
     if halted:
         return f"kasa durduruldu: {halted}"
-    if equity <= limits.capital_usd - limits.kill_drawdown_usd:
+    if limits.kill_drawdown_usd > 0 and equity <= limits.capital_usd - limits.kill_drawdown_usd:
         return f"zarar limiti: özsermaye {equity:.2f}$"
-    if daily_net_usd <= -limits.daily_loss_stop_usd:
+    if limits.daily_loss_stop_usd > 0 and daily_net_usd <= -limits.daily_loss_stop_usd:
         return f"günlük zarar limiti: {daily_net_usd:.2f}$"
-    if len(open_positions) >= limits.max_open_positions:
+    if limits.max_open_positions > 0 and len(open_positions) >= limits.max_open_positions:
         return f"en fazla {limits.max_open_positions} açık pozisyon"
     if any(p["symbol"] == symbol for p in open_positions):
         return "bu paritede açık pozisyon var"
-    if sum(1 for p in open_positions if p["direction"] == direction) >= limits.max_same_direction:
+    if limits.max_same_direction > 0 and sum(1 for p in open_positions if p["direction"] == direction) >= limits.max_same_direction:
         return f"aynı yönde en fazla {limits.max_same_direction} pozisyon"
-    if last_open_ts is not None and now - last_open_ts < limits.symbol_cooldown_seconds:
+    if limits.symbol_cooldown_seconds > 0 and last_open_ts is not None and now - last_open_ts < limits.symbol_cooldown_seconds:
         return "parite bekleme süresinde"
     return None

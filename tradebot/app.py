@@ -1,4 +1,4 @@
-"""Runs everything: strategies, positions, news, desk, arbitrage, Telegram and persistence."""
+"""Runs everything: strategies, positions, news trades, desk, arbitrage, panel and persistence."""
 
 import asyncio
 import json
@@ -20,29 +20,36 @@ from .costs import PERP_VENUES, breakeven_winrate, round_trip_cost_pct, sign
 from .desk import Candidate, Desk
 from .news import NewsDesk
 from .paper import PaperBook, Plan, Quote
-from .risk import Filters
 from .signals import ema
-from .strategies import LIVE_STRATEGIES, NEWS_EXITS, Bars, ExitRule, LiveStrategy, atr, rsi
+from .strategies import LIVE_STRATEGIES, NEWS_EXITS, SOURCE_LABELS, Bars, ExitRule, LiveStrategy, atr, rsi
 from .telegram import Telegram
 from .venues import Candles, DataError, Funding, Market
+from .web import make_app
 
 logger = logging.getLogger("tradebot")
 
 POSITION_POLL_SECONDS = 5.0
 STRATEGY_POLL_SECONDS = 20.0
 BAR_CLOSE_GRACE_SECONDS = 8.0
-NEWS_POLL_SECONDS = 180.0
+NEWS_POLL_SECONDS = 60.0
 PERSIST_SECONDS = 30.0
 BACKUP_SECONDS = 600.0
 BACKUP_CHECK_SECONDS = 20.0
 KEEP_AWAKE_SECONDS = 600.0
 FUNDING_CACHE_SECONDS = 60.0
+CURVE_SAMPLE_SECONDS = 300.0
+MAX_CURVE_POINTS = 1500
+MAX_EVENTS = 300
+# Hyperliquid candle requests are expensive, so their traded range refreshes less often.
+RANGE_REFRESH_SECONDS = {"binance": 10.0, "bybit": 10.0, "hyperliquid": 60.0}
+TOP_OF_BOOK_SIZE = 1e12
 NEWS_SYMBOL_COOLDOWN_SECONDS = 3600.0
 # After a desk session the price must still be near the plan. Share of the stop distance.
 MAX_ENTRY_DRIFT = 0.35
 # A signal older than this is not traded, for example right after a restart.
 MAX_SIGNAL_AGE_SECONDS = 300.0
 ASSUMED_REWARD_R_WITHOUT_TARGET = 2.0
+STATE_VERSION = 3
 
 
 @dataclass
@@ -54,8 +61,7 @@ class DeskRequest:
     technical: dict
     signal_atr: float
     exits: ExitRule
-    hours: int
-STATE_VERSION = 2
+    hours: float
 
 
 def bars_from(symbol: str, candles: Candles, funding: Optional[np.ndarray], bar_ms: int) -> Bars:
@@ -65,11 +71,12 @@ def bars_from(symbol: str, candles: Candles, funding: Optional[np.ndarray], bar_
 
 
 def build_plan(symbol: str, direction: str, reference: float, signal_atr: float, exits: ExitRule, limits,
-               origin: str, strategy: str, hours: int, reason: str = "", size_factor: float = 1.0,
+               origin: str, strategy: str, hours: float, reason: str = "", size_factor: float = 1.0,
                session_id: Optional[str] = None) -> Plan:
     """Stop and target from strategy exits, with the stop distance held inside the allowed band."""
-    distance = float(np.clip(signal_atr * exits.stop_atr, reference * limits.min_stop_pct / 100.0,
-                             reference * limits.max_stop_pct / 100.0))
+    low_pct = limits.min_stop_pct if exits.min_stop_pct is None else exits.min_stop_pct
+    high_pct = limits.max_stop_pct if exits.max_stop_pct is None else exits.max_stop_pct
+    distance = float(np.clip(signal_atr * exits.stop_atr, reference * low_pct / 100.0, reference * high_pct / 100.0))
     s = sign(direction)
     target = reference + s * distance * exits.target_r if exits.target_r else None
     return Plan(symbol, direction, reference - s * distance, target, origin, strategy, reason, size_factor,
@@ -78,9 +85,8 @@ def build_plan(symbol: str, direction: str, reference: float, signal_atr: float,
 
 def venue_with_results(saved_books: Optional[dict]) -> Optional[str]:
     """The CEX venue of a saved book that has trades or open positions, if any."""
-    for name in ("rules_cex", "desk_cex"):
-        state = (saved_books or {}).get(name)
-        if state and (state.get("history") or state.get("open")):
+    for name, state in (saved_books or {}).items():
+        if name.endswith("_cex") and state and (state.get("history") or state.get("open")):
             return state.get("venue")
     return None
 
@@ -109,19 +115,23 @@ class Bot:
         self.news_cooldown: Dict[str, float] = {}
         self.quote_times: Dict[str, float] = {}
         self.funding_cache: Dict[str, Tuple[float, Funding]] = {}
+        self.candle_cache: Dict[str, Tuple[float, Candles]] = {}
         self.desk_queue: asyncio.Queue = asyncio.Queue(maxsize=20)
         self.notified: Dict[str, float] = {}
         self.loop_errors: Dict[str, dict] = {}
         self.backup_dirty = False
         self.perp_venues: List[str] = []
         self.spot_venues: List[str] = []
+        self.events: List[dict] = []
+        self.curve: List[dict] = []
 
     # ---------------------------------------------------------------- setup and persistence
 
     def _make_books(self, saved: Optional[dict]):
+        """One separate $100 book per signal source and market, so results never mix."""
         saved = saved or {}
         venues = {"cex": self.cex_venue, "dex": settings.DEX_VENUE}
-        for source in ("rules", "desk"):
+        for source in SOURCE_LABELS:
             for kind, venue in venues.items():
                 if not venue:
                     continue
@@ -139,6 +149,7 @@ class Bot:
             "books": {k: b.state for k, b in self.books.items()},
             "news": self.news.to_state(), "desk": self.desk.state, "arb": self.arb.state,
             "seen_bars": self.seen_bars, "news_cooldown": self.news_cooldown,
+            "events": self.events, "curve": self.curve,
         }
 
     def _state_path(self) -> Path:
@@ -180,6 +191,8 @@ class Bot:
                 self.arb = ArbLedger(saved["arb"])
             self.seen_bars = saved.get("seen_bars", {})
             self.news_cooldown = saved.get("news_cooldown", {})
+            self.events = saved.get("events", [])
+            self.curve = saved.get("curve", [])
         self.perp_venues = [v for v in ("binance", "bybit") if await self._reachable(v)]
         self.spot_venues = [v for v in ("binance", "bybit") if await self._spot_reachable(v)]
         self.scanner = ArbScanner(self.market, self.session, self.arb, self.perp_venues, self.spot_venues)
@@ -202,8 +215,16 @@ class Bot:
         for book in self.books.values():
             book.reset()
         self.arb.reset()
+        self.curve = []
+        self.log("sistem", "Sahte kasalar ve ölçümler sıfırlandı")
 
-    # ---------------------------------------------------------------- report helpers
+    # ---------------------------------------------------------------- helpers
+
+    def log(self, kind: str, text: str) -> None:
+        """The panel's event log. Trade detail goes here instead of the Telegram chat."""
+        self.events.append({"at": time.time(), "kind": kind, "text": text})
+        del self.events[:-MAX_EVENTS]
+        logger.info("%s: %s", kind, text)
 
     def last_session(self) -> Optional[dict]:
         sessions = self.desk.state["sessions"]
@@ -239,15 +260,27 @@ class Bot:
         return f
 
     async def _quote(self, venue: str, symbol: str) -> Quote:
-        """A real order book with the latest funding. Candle range is added per position."""
+        """A real order book with the latest funding, for filling an entry."""
         book = await self.market.book(venue, symbol, 20)
         funding = await self._funding(venue, symbol)
         self.quote_times[f"{venue}:{symbol}"] = book.ts
         return Quote(book.bids, book.asks, book.ts, None, None,
                      funding.rate if funding else None, funding.next_ts if funding else None)
 
-    async def _filters(self, venue: str, symbol: str) -> Filters:
-        return await self.market.filters(venue, symbol)
+    async def _candles_for_range(self, venue: str, symbol: str, oldest_ms: float) -> Optional[Candles]:
+        """Recent 1m candles for catching wicks, cached so polling stays cheap."""
+        key = f"{venue}:{symbol}"
+        cached = self.candle_cache.get(key)
+        if cached and time.time() - cached[0] < RANGE_REFRESH_SECONDS.get(venue, 10.0):
+            return cached[1]
+        minutes = int((time.time() * 1000 - oldest_ms) // 60_000) + 2
+        try:
+            candles = await self.market.candles(venue, symbol, "1m", min(max(minutes, 3), 1000))
+        except DataError as e:
+            self.loop_errors[f"mum {venue}"] = {"at": time.time(), "detail": str(e)}
+            return cached[1] if cached else None
+        self.candle_cache[key] = (time.time(), candles)
+        return candles
 
     # ---------------------------------------------------------------- strategies
 
@@ -257,7 +290,7 @@ class Bot:
 
     async def _bars(self, symbol: str, strategy: LiveStrategy) -> Bars:
         candles = await self.market.candles(self.signal_venue, symbol, strategy.interval, strategy.bars_needed)
-        bar_ms = strategy.hours * 3_600_000
+        bar_ms = int(strategy.hours * 3_600_000)
         closed = candles.closed(time.time() * 1000, bar_ms)
         funding = None
         if strategy.name.startswith("funding"):
@@ -270,7 +303,7 @@ class Bot:
     async def scan_strategies(self):
         now_ms = time.time() * 1000
         for strategy in LIVE_STRATEGIES:
-            bar_ms = strategy.hours * 3_600_000
+            bar_ms = int(strategy.hours * 3_600_000)
             last_closed_open = (now_ms - BAR_CLOSE_GRACE_SECONDS * 1000) // bar_ms * bar_ms - bar_ms
             for symbol in settings.SYMBOLS:
                 key = f"{strategy.name}:{symbol}"
@@ -299,73 +332,141 @@ class Bot:
         for i, direction, signal_atr in strategy.make(bars):
             if i != last or not np.isfinite(signal_atr):
                 continue
-            logger.info("Signal %s %s %s", strategy.name, bars.symbol, direction)
-            if strategy.rules_trade:
-                await self._open_rules(strategy, bars.symbol, direction, float(signal_atr))
-            await self._queue_request(DeskRequest(bars.symbol, strategy.name, strategy.label, direction,
-                                                  self._technical_summary(bars), float(signal_atr), strategy.exits,
-                                                  strategy.hours))
+            await self.open_for_source(strategy.name, bars.symbol, direction, float(signal_atr), strategy.exits,
+                                       strategy.name, strategy.hours, f"{strategy.label}: {direction}")
+            if strategy.desk_candidate:
+                await self._queue_request(DeskRequest(bars.symbol, strategy.name, strategy.label, direction,
+                                                      self._technical_summary(bars), float(signal_atr), strategy.exits,
+                                                      strategy.hours))
 
-    async def _open_rules(self, strategy: LiveStrategy, symbol: str, direction: str, signal_atr: float):
-        reason = f"{strategy.label}: {direction}"
+    async def open_for_source(self, source: str, symbol: str, direction: str, signal_atr: float, exits: ExitRule,
+                              strategy_name: str, hours: float, reason: str, size_factor: float = 1.0,
+                              session_id: Optional[str] = None) -> Dict[str, dict]:
+        """Opens on every book of this source, one per market. Returns each book's result."""
+        results = {}
         for book in self.books.values():
-            if book.source != "rules":
-                continue
-            await self._open_on_book(book, symbol, direction, signal_atr, strategy.exits, strategy.name,
-                                     strategy.hours, reason)
+            if book.source == source:
+                results[book.name] = await self._open_on_book(book, symbol, direction, signal_atr, exits, strategy_name,
+                                                               hours, reason, size_factor, session_id)
+        return results
 
     async def _open_on_book(self, book: PaperBook, symbol: str, direction: str, signal_atr: float, exits: ExitRule,
-                            strategy_name: str, hours: int, reason: str, size_factor: float = 1.0,
-                            session_id: Optional[str] = None) -> Optional[dict]:
+                            strategy_name: str, hours: float, reason: str, size_factor: float = 1.0,
+                            session_id: Optional[str] = None) -> dict:
         venue = book.venue.name
         try:
             quote = await self._quote(venue, symbol)
-            filters = await self._filters(venue, symbol)
+            filters = await self.market.filters(venue, symbol)
         except DataError as e:
-            await self.telegram.send(f"⚠️ {book.name} {symbol}: işlem açılamadı, veri yok ({e}).")
-            return None
+            self.log("uyarı", f"{book.name} {symbol} açılamadı, veri yok: {e}")
+            return {"rejected": f"veri yok: {e}"}
         reference = quote.asks[0][0] if sign(direction) > 0 else quote.bids[0][0]
         plan = build_plan(symbol, direction, reference, signal_atr, exits, self.limits, book.source, strategy_name,
                           hours, reason, size_factor, session_id)
         result = book.try_open(plan, quote, filters)
         if "opened" in result:
             self.backup_dirty = True
-            await self.telegram.send(reports.format_open_event(book, result["opened"]))
-            return result["opened"]
-        logger.info("%s rejected %s %s: %s", book.name, symbol, direction, result["rejected"])
-        return None
+            p = result["opened"]
+            self.log("açılış", f"{SOURCE_LABELS.get(book.source, book.source)} / {venue}: {symbol} {direction} "
+                               f"{p['leverage']}x, giriş {p['entry']:.6g}")
+        else:
+            self.log("red", f"{SOURCE_LABELS.get(book.source, book.source)} / {venue}: {symbol} {direction} açılmadı: "
+                            f"{result['rejected']}")
+        return result
 
     # ---------------------------------------------------------------- positions
 
     async def update_positions(self):
-        targets = {(b.venue.name, p["symbol"]) for b in self.books.values() for p in b.state["open"]}
-        for venue, symbol in targets:
-            positions = [(b, p) for b in self.books.values() if b.venue.name == venue
-                         for p in b.state["open"] if p["symbol"] == symbol]
-            oldest = min(p["range_from_ms"] for _, p in positions)
-            minutes = int((time.time() * 1000 - oldest) // 60_000) + 2
+        """Cheap bulk prices every poll. A real order book is fetched only to fill an exit."""
+        by_venue: Dict[str, Dict[str, List[Tuple[PaperBook, dict]]]] = {}
+        for book in self.books.values():
+            for p in book.state["open"]:
+                by_venue.setdefault(book.venue.name, {}).setdefault(p["symbol"], []).append((book, p))
+        for venue, symbols in by_venue.items():
             try:
-                quote = await self._quote(venue, symbol)
-                candles = await self.market.candles(venue, symbol, "1m", min(max(minutes, 3), 1000))
+                tops = await self.market.tops(venue)
             except DataError as e:
                 self.loop_errors[f"fiyat {venue}"] = {"at": time.time(), "detail": str(e)}
                 continue
-            for book, p in positions:
+            for symbol, positions in symbols.items():
+                top = tops.get(symbol)
+                if top:
+                    await self._update_symbol(venue, symbol, top, positions)
+
+    async def _update_symbol(self, venue: str, symbol: str, top: Tuple[float, float],
+                             positions: List[Tuple[PaperBook, dict]]):
+        now = time.time()
+        self.quote_times[f"{venue}:{symbol}"] = now
+        oldest = min(p["range_from_ms"] for _, p in positions)
+        candles = await self._candles_for_range(venue, symbol, oldest)
+        funding = await self._funding(venue, symbol)
+        real_book = None
+        for book, p in positions:
+            high = low = None
+            if candles is not None:
                 keep = candles.ts >= p["range_from_ms"]
-                quote.high = float(candles.highs[keep].max()) if keep.any() else None
-                quote.low = float(candles.lows[keep].min()) if keep.any() else None
-                was_halted = book.state["halted"]
-                for trade in book.on_quote(symbol, quote):
-                    self.backup_dirty = True
-                    await self.telegram.send(reports.format_close_event(book, trade))
-                if book.state["halted"] and not was_halted:
-                    await self.telegram.send(f"⛔ {book.name} durduruldu: {book.state['halted']}. Yeni işlem açmaz.")
+                if keep.any():
+                    high, low = float(candles.highs[keep].max()), float(candles.lows[keep].min())
+            quote = Quote([[top[0], TOP_OF_BOOK_SIZE]], [[top[1], TOP_OF_BOOK_SIZE]], now, high, low,
+                          funding.rate if funding else None, funding.next_ts if funding else None)
+            if book.exit_signal(p, quote):
+                if real_book is None:
+                    try:
+                        real_book = await self.market.book(venue, symbol, 20)
+                    except DataError as e:
+                        self.loop_errors[f"fiyat {venue}"] = {"at": now, "detail": str(e)}
+                        continue  # No fill without a real book. The next poll tries again.
+                quote.bids, quote.asks = real_book.bids, real_book.asks
+            for trade in self._apply_quote(book, p, symbol, quote):
+                self.backup_dirty = True
+                self.log("kapanış", f"{SOURCE_LABELS.get(book.source, book.source)} / {venue}: {symbol} "
+                                    f"{trade['direction']}, {trade['exit_reason']}, net {trade['net']:+.2f}$")
+
+    @staticmethod
+    def _apply_quote(book: PaperBook, p: dict, symbol: str, quote: Quote) -> List[dict]:
+        return book.on_quote(symbol, quote)
+
+    def sample_curve(self):
+        self.curve.append({"t": round(time.time()), "e": {k: round(b.equity(), 2) for k, b in self.books.items()}})
+        if len(self.curve) > MAX_CURVE_POINTS:
+            # Older points thin out, so the chart keeps its full time range.
+            half = len(self.curve) // 2
+            self.curve = self.curve[:half][::2] + self.curve[half:]
+
+    # ---------------------------------------------------------------- news trades
+
+    async def trade_news(self):
+        """Good headline: long. Bad headline: short. Only on symbols the headline names."""
+        now = time.time()
+        for item in self.news.trade_triggers(now):
+            direction = "LONG" if item.sentiment > 0 else "SHORT"
+            for symbol in item.symbols:
+                try:
+                    candles = await self.market.candles(self.signal_venue, symbol, "1h", 250)
+                except DataError as e:
+                    self.news.record_action(item.id, {"symbol": symbol, "direction": direction, "opened": [],
+                                                      "rejected": {"hepsi": f"veri yok: {e}"}})
+                    continue
+                bars = bars_from(symbol, candles.closed(now * 1000, 3_600_000), None, 3_600_000)
+                a = atr(bars)
+                if len(bars.ts) < 60 or not np.isfinite(a[-1]):
+                    self.news.record_action(item.id, {"symbol": symbol, "direction": direction, "opened": [],
+                                                      "rejected": {"hepsi": "yeterli mum yok"}})
+                    continue
+                results = await self.open_for_source("news", symbol, direction, float(a[-1]), NEWS_EXITS, "news", 1,
+                                                     f"Haber: {item.title}")
+                self.news.record_action(item.id, {
+                    "symbol": symbol, "direction": direction,
+                    "opened": [self.books[k].venue.name for k, r in results.items() if "opened" in r],
+                    "rejected": {self.books[k].venue.name: r["rejected"] for k, r in results.items() if "rejected" in r},
+                })
 
     # ---------------------------------------------------------------- desk
 
     def _technical_summary(self, bars: Bars) -> dict:
         closes = bars.closes
         a = atr(bars)
+
         def change(n: int) -> Optional[float]:
             return round((closes[-1] / closes[-1 - n] - 1.0) * 100.0, 2) if len(closes) > n else None
         return {
@@ -389,8 +490,7 @@ class Bot:
         block = self.desk.block_reason(now)
         if block:
             if self.desk.enabled:
-                await self.notify_once(f"desk-block-{int(now // 86400)}",
-                                       f"🧠 Masa {request.symbol} sinyaline bakamadı: {block}", 86400.0)
+                await self.notify_once(f"desk-block-{int(now // 86400)}", f"🧠 Masa çalışamıyor: {block}", 86400.0)
             return
         try:
             self.desk_queue.put_nowait(request)
@@ -437,9 +537,11 @@ class Bot:
         candidate = Candidate(r.symbol, r.trigger, r.label, r.direction, briefing, news_lines)
         record = await self.desk.run_session(candidate, now)
         if record.get("skipped"):
-            await self.notify_once(f"desk-skip-{int(now // 86400)}", f"🧠 Masa çalışmadı: {record['reason']}", 86400.0)
+            self.log("masa", f"{r.symbol} oturumu yapılmadı: {record['reason']}")
             return
-        await self.telegram.send(reports.format_session(record, full=True))
+        self.log("masa", f"{r.symbol}: {record['action']} ({record['reason']}), maliyet {record['cost_usd']:.4f}$")
+        if self.desk.disabled_reason:
+            await self.notify_once("desk-disabled", f"🧠 Masa durdu: {self.desk.disabled_reason}", 86400.0)
         if record["action"] == "NO_TRADE":
             return
         stop_distance = r.signal_atr * r.exits.stop_atr
@@ -449,10 +551,10 @@ class Bot:
             try:
                 snapshot = await self.market.book(book.venue.name, r.symbol, 5)
             except DataError as e:
-                await self.telegram.send(f"⚠️ {book.name}: masa kararı uygulanamadı, veri yok ({e}).")
+                self.log("uyarı", f"{book.name}: masa kararı uygulanamadı, veri yok: {e}")
                 continue
             if not drift_is_acceptable(record["action"], r.technical["last_close"], snapshot.mid, stop_distance):
-                await self.telegram.send(f"🧠 {book.name} {r.symbol}: fiyat tartışma sırasında çok oynadı, işlem açılmadı.")
+                self.log("masa", f"{book.name} {r.symbol}: fiyat tartışma sırasında çok oynadı, işlem açılmadı")
                 continue
             await self._open_on_book(book, r.symbol, record["action"], r.signal_atr, r.exits, r.trigger, r.hours,
                                      f"Masa kararı: {record['reason']}", record["size_factor"], record["id"])
@@ -460,6 +562,8 @@ class Bot:
     async def trigger_news_sessions(self):
         now = time.time()
         for item in self.news.session_triggers(now):
+            if not self.desk.enabled:
+                continue
             for symbol in item.symbols:
                 if now - self.news_cooldown.get(symbol, 0.0) < NEWS_SYMBOL_COOLDOWN_SECONDS:
                     continue
@@ -492,6 +596,7 @@ class Bot:
 
     async def _news_step(self):
         await self.news.refresh(self.session)
+        await self.trade_news()
         await self.trigger_news_sessions()
 
     async def _desk_worker(self):
@@ -503,29 +608,28 @@ class Bot:
                 raise
             except Exception as e:
                 logger.exception("Desk session failed")
-                await self.telegram.send(f"⚠️ Masa oturumu hata verdi ({type(e).__name__}). İşlem açılmadı.")
+                self.log("uyarı", f"Masa oturumu hata verdi ({type(e).__name__}), işlem açılmadı")
 
     async def _arb_perp_step(self):
-        await self.scanner.scan_perps(settings.SYMBOLS)
+        await self.scanner.scan_perps(settings.ARB_SYMBOLS)
         await self.scanner.scan_spot()
-        await self._flush_arb_events()
+        self._flush_arb_events()
 
     async def _arb_dex_step(self):
         await self.scanner.scan_dex()
-        await self._flush_arb_events()
+        self._flush_arb_events()
 
-    async def _flush_arb_events(self):
+    def _flush_arb_events(self):
         events, self.scanner.events = self.scanner.events, []
         for event in events:
             if event["type"] == "arb_open":
                 p = event["pair"]
-                await self.telegram.send(f"💱 Sahte arbitraj açıldı: {p['symbol']}, {p['long_at']} long, {p['short_at']} short.\n"
-                                         f"Beklenen net {event['op'].net_bps:+.1f} bps. Sonuç kapanınca belli olur.")
+                self.log("arbitraj", f"{p['symbol']} açıldı: {p['long_at']} long, {p['short_at']} short, "
+                                     f"beklenen net {event['op'].net_bps:+.1f} bps")
             else:
                 t = event["trade"]
-                await self.telegram.send(f"💱 Sahte arbitraj sonucu: {t['symbol']}, {t['buy_at']} al, {t['sell_at']} sat.\n"
-                                         f"Brüt {reports.money(t['gross'])} | Komisyon {t['fees']:.3f}$ | Diğer {t['other']:.3f}$ | "
-                                         f"NET {reports.money(t['net'])}")
+                self.log("arbitraj", f"{t['symbol']}: {t['buy_at']} al, {t['sell_at']} sat, net {t['net']:+.3f}$")
+            self.backup_dirty = True
 
     async def _persist_step(self):
         self.save_local()
@@ -546,39 +650,30 @@ class Bot:
                 except Exception:
                     logger.exception("Backup failed")
 
+    async def _digest_loop(self):
+        seconds = settings.TELEGRAM_DIGEST_HOURS * 3600.0
+        while True:
+            await asyncio.sleep(seconds)
+            try:
+                await self.telegram.send(reports.format_digest(self))
+            except Exception:
+                logger.exception("Digest failed")
+
     async def _keep_awake_step(self):
         if settings.EXTERNAL_URL:
             async with self.session.get(settings.EXTERNAL_URL, timeout=aiohttp.ClientTimeout(total=20)):
                 pass
 
-    async def _health(self, _request) -> web.Response:
-        now = time.time()
-        return web.json_response({
-            "ok": True, "mode": "paper", "uptime_hours": round((now - self.started_at) / 3600.0, 2),
-            "cex": self.cex_venue, "dex": settings.DEX_VENUE,
-            "books": {k: {x: b.stats()[x] for x in ("balance", "equity", "trades", "net", "open", "halted")}
-                      for k, b in self.books.items()},
-            "desk": {"enabled": self.desk.enabled, "reason": self.desk.disabled_reason, "model": self.desk.model,
-                     "sessions": self.desk.state["sessions_total"], "spent_usd": round(self.desk.state["spent_total"], 4)},
-            "news_items": len(self.news.items),
-            "reachable": {"perp": self.perp_venues, "spot": self.spot_venues},
-            "arbitrage": {key: {"scans": k["scans"], "gross_bps": k["last_gross_bps"], "net_bps": k["last_net_bps"],
-                                "best_net_bps": k["best_net_bps"], "trades": k["trades"], "net_usd": k["net_usd"],
-                                "unavailable": k.get("unavailable"), "error": k["last_error"]}
-                          for key, k in self.arb.state["kinds"].items()},
-            "errors": self.data_errors(now),
-        })
+    async def _curve_step(self):
+        self.sample_curve()
 
-    async def serve_health(self):
-        app = web.Application()
-        app.router.add_get("/", self._health)
-        app.router.add_get("/status", self._health)
-        runner = web.AppRunner(app)
+    async def serve_panel(self):
+        runner = web.AppRunner(make_app(self))
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", settings.PORT).start()
 
     async def run(self):
-        await self.serve_health()
+        await self.serve_panel()
         await self.setup()
         await self.telegram.send(reports.format_startup(self), keyboard=True)
         await asyncio.gather(
@@ -590,13 +685,16 @@ class Bot:
             self._forever("arbitraj", settings.ARB_SCAN_SECONDS, self._arb_perp_step),
             self._forever("dex", settings.ARB_DEX_SCAN_SECONDS, self._arb_dex_step),
             self._forever("kayıt", PERSIST_SECONDS, self._persist_step),
-            self._backup_loop(),
+            self._forever("grafik", CURVE_SAMPLE_SECONDS, self._curve_step),
             self._forever("uyanık", KEEP_AWAKE_SECONDS, self._keep_awake_step),
+            self._backup_loop(),
+            self._digest_loop(),
         )
 
 
 async def amain():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     async with aiohttp.ClientSession() as session:
         bot = Bot(session)
         task = asyncio.create_task(bot.run())

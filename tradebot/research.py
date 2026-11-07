@@ -286,7 +286,7 @@ def main():
     args = parser.parse_args()
     print(f"Loading {args.days} days...", flush=True)
     hourly = asyncio.run(load_hourly(settings.SYMBOLS, args.days))
-    report = evaluate_all(hourly, settings.LIMITS, args.runs)
+    report = evaluate_all(hourly, settings.RESEARCH_LIMITS, args.runs)
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=1, ensure_ascii=False))
 

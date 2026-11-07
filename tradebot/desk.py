@@ -3,8 +3,10 @@
 Flow: three analysts give independent views, a bull and a bear debate, the risk officer can veto,
 and the head trader decides. Agents choose only direction, conviction and half or full size. Code
 sets the symbol, size, stop, target and leverage, so no agent output, and no text injected through
-a news headline, can exceed a risk limit. Code also requires support from a technical or flow
-analyst, so a headline alone can never open a trade.
+a news headline, can exceed the size of one trade. A session started by a strategy needs support
+from a technical or flow analyst. A session started by news may also rest on the news analyst,
+because trading the news is its purpose. Review that rule before any real money: there, a
+manipulated headline could cost one trade's risk.
 
 Spend is measured on every call, capped per UTC day, and charged against the desk's results.
 """
@@ -171,7 +173,7 @@ def clamp_turn(turn: Turn, role: str) -> dict:
     }
 
 
-def decide(turns: List[dict], min_conviction: int) -> dict:
+def decide(turns: List[dict], min_conviction: int, news_triggered: bool = False) -> dict:
     """Code has the last word. Anything but a clean head-trader call becomes no trade."""
     by = {t["role_key"]: t for t in turns}
     head = by.get("head")
@@ -184,10 +186,10 @@ def decide(turns: List[dict], min_conviction: int) -> dict:
     if head["conviction"] < min_conviction:
         return {"action": "NO_TRADE", "reason": f"Güven düşük: {head['conviction']} < {min_conviction}",
                 "size_factor": 0.0}
-    supporters = [r for r in ("technical", "flow") if by.get(r, {}).get("stance") == head["stance"]]
+    roles = ("technical", "flow", "news") if news_triggered else ("technical", "flow")
+    supporters = [r for r in roles if by.get(r, {}).get("stance") == head["stance"]]
     if not supporters:
-        return {"action": "NO_TRADE", "reason": "Teknik veya akış analisti bu yönü desteklemiyor; "
-                                                "haber tek başına yetmez", "size_factor": 0.0}
+        return {"action": "NO_TRADE", "reason": "Analistlerden hiçbiri bu yönü desteklemiyor", "size_factor": 0.0}
     return {"action": head["stance"], "reason": "Masa onayladı",
             "size_factor": 0.5 if head["size"] == "half" else 1.0}
 
@@ -350,5 +352,5 @@ class Desk:
 
         turns.append(await self._call("risk", briefing, turns, effort))
         turns.append(await self._call("head", briefing, turns, head_effort))
-        outcome = decide(turns, settings.DESK_MIN_CONVICTION)
+        outcome = decide(turns, settings.DESK_MIN_CONVICTION, news_triggered=c.trigger == "haber")
         record.update(action=outcome["action"], reason=outcome["reason"], size_factor=outcome["size_factor"])

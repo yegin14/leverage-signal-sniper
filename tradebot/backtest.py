@@ -318,7 +318,7 @@ def main():
     args = parser.parse_args()
     print(f"Downloading {args.days} days of history...", flush=True)
     history = asyncio.run(load_history(settings.SYMBOLS, args.days))
-    report = run(history, settings.LIMITS, args.runs)
+    report = run(history, replace(settings.RESEARCH_LIMITS, min_stop_pct=1.25, max_stop_pct=3.0), args.runs)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=1))

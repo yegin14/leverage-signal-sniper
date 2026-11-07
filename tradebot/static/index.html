@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Paneli</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="viz-root">
+<header class="top">
+  <div class="top-title">
+    <h1>Kaldıraç ve arbitraj botu</h1>
+    <span class="paper-badge">⚠ SAHTE PARA</span>
+  </div>
+  <p id="freshness" class="muted" aria-live="polite">Bağlanıyor…</p>
+</header>
+<div id="banner" class="banner" role="alert" hidden></div>
+<nav id="tabs" class="tabs" role="tablist" aria-label="Bölümler"></nav>
+<main id="main">
+  <section id="tab-genel" class="tab" role="tabpanel"></section>
+  <section id="tab-pozisyonlar" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-islemler" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-arbitraj" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-haberler" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-masa" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-giderler" class="tab" role="tabpanel" hidden></section>
+  <section id="tab-sistem" class="tab" role="tabpanel" hidden></section>
+</main>
+<noscript><p class="banner">Bu panel JavaScript ile çalışır.</p></noscript>
+<script src="/static/app.js"></script>
+</body>
+</html>

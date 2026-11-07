@@ -274,6 +274,57 @@ def test_time_stop_exits_with_taker_fee():
     assert t["exit_fee"] == pytest.approx(p["qty"] * 100.5 * 0.0005)
 
 
+def test_default_trial_limits_block_nothing_by_count():
+    from tradebot.settings import LIMITS as TRIAL
+    many = [{"symbol": f"S{i}", "direction": "LONG"} for i in range(30)]
+    assert entry_block_reason("LONG", "NEW", many, -500.0, 10.0, TRIAL, None, 999.0, 1000.0) is None
+    assert "açık pozisyon var" in entry_block_reason("LONG", "S1", many, 0, 100, TRIAL, None, None, 0)
+
+
+def test_trial_book_is_not_halted_by_drawdown():
+    from tradebot.settings import LIMITS as TRIAL
+    b = PaperBook("t", "binance", "rules", TRIAL)
+    b.state["balance"] = 20.0
+    b._update_drawdown({})
+    assert b.state["halted"] is None
+
+
+def test_leverage_rises_to_fit_when_free_margin_is_low():
+    roomy = size_position(100, 98.5, PERP_VENUES["binance"], LIMITS, FILTERS, 100, 100)
+    tight = size_position(100, 98.5, PERP_VENUES["binance"], LIMITS, FILTERS, 100, 20)
+    assert isinstance(roomy, Sized) and isinstance(tight, Sized)
+    assert tight.leverage > roomy.leverage
+    assert tight.margin <= 20
+
+
+def test_exit_signal_reports_without_filling():
+    b = book()
+    p = b.try_open(long_plan(), quote(), FILTERS)["opened"]
+    assert b.exit_signal(p, quote(bid=100.5, ask=100.6, ts=2000)) is None
+    assert b.exit_signal(p, quote(bid=97.0, ask=97.1, ts=2000)) == "stop"
+    assert b.exit_signal(p, quote(bid=100.5, ask=100.6, ts=2000, high=104.5, low=100)) == "target"
+    assert len(b.state["open"]) == 1
+
+
+@pytest.mark.parametrize("stop_pct", [0.5, 1.25, 2.0, 3.0, 5.0, 8.0, 15.0])
+def test_liquidation_stays_at_least_twice_as_far_as_the_stop(stop_pct):
+    wide = RiskLimits(max_leverage=50, max_margin_per_trade_pct=0.1)
+    venue = PERP_VENUES["binance"]
+    entry = 100.0
+    stop = entry * (1 - stop_pct / 100.0)
+    s = size_position(entry, stop, venue, wide, FILTERS, 100, 100)
+    assert isinstance(s, Sized)
+    liq = liquidation_price("LONG", entry, s.leverage, venue.maintenance_pct)
+    assert entry - liq >= 2 * (entry - stop) - 1e-9
+
+
+def test_venue_leverage_cap_is_respected():
+    capped = Filters(5.0, 0.001, 0.0, 3)
+    wide = RiskLimits(max_leverage=50, max_margin_per_trade_pct=0.1)
+    s = size_position(100, 98, PERP_VENUES["hyperliquid"], wide, capped, 100, 100)
+    assert s.leverage == 3
+
+
 def test_entry_blocks():
     open_positions = [{"symbol": "A", "direction": "LONG"}, {"symbol": "B", "direction": "LONG"}]
     assert "aynı yönde" in entry_block_reason("LONG", "C", open_positions, 0, 100, LIMITS, None, None, 0)

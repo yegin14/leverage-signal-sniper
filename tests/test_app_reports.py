@@ -1,18 +1,23 @@
+import json
 import time
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
-from tradebot import reports
+from tradebot import reports, settings
 from tradebot.app import Bot, DeskRequest, bars_from, build_plan, drift_is_acceptable, venue_with_results
 from tradebot.desk import Desk
+from tradebot.news import NewsItem
 from tradebot.paper import PaperBook, Plan, Quote
 from tradebot.risk import Filters
 from tradebot.settings import LIMITS
-from tradebot.strategies import FUNDING_EXITS, LIVE_STRATEGIES, TREND_4H_EXITS, funding_contrarian, trend_breakout
+from tradebot.strategies import (FUNDING_EXITS, LIVE_STRATEGIES, SIGNAL_15M_EXITS, SOURCE_LABELS, TREND_4H_EXITS,
+                                 funding_contrarian, signal_15m, trend_breakout)
 from tradebot.telegram import BACKUP_FILENAME, COMMANDS, KEYBOARD, Telegram, normalize_command
 from tradebot.venues import Book, Candles, DataError, Market
+from tradebot.web import make_app, sanitize
 
 FILTERS = Filters(5.0, 0.001)
 NOW = 1_800_000_000.0
@@ -23,11 +28,18 @@ class FakeMarket:
         self.price = price
         self.errors = {}
         self.fail = False
+        self.book_calls = 0
 
     async def book(self, venue, symbol, depth=20):
+        self.book_calls += 1
         if self.fail:
             raise DataError(venue, "HTTP 500")
         return Book(venue, symbol, [[self.price - 0.05, 1000]], [[self.price + 0.05, 1000]], time.time())
+
+    async def tops(self, venue):
+        if self.fail:
+            raise DataError(venue, "HTTP 500")
+        return {s: (self.price - 0.05, self.price + 0.05) for s in (*settings.SYMBOLS, "SOLUSDT")}
 
     async def filters(self, venue, symbol):
         return FILTERS
@@ -52,19 +64,21 @@ class FakeSession:
     pass
 
 
-def make_bot(tmp_path, answers=None):
-    bot = Bot.__new__(Bot)
-    Bot.__init__(bot, FakeSession(), desk=Desk(client=None, model="claude-opus-5-5"), data_dir=tmp_path)
+def make_bot(tmp_path):
+    bot = Bot(FakeSession(), desk=Desk(client=None, model="claude-opus-5-5"), data_dir=tmp_path)
     bot.market = FakeMarket()
     bot.cex_venue = "binance"
     bot._make_books(None)
-    sent = []
+    bot.sent = []
 
     async def capture(text, keyboard=False):
-        sent.append(text)
+        bot.sent.append(text)
     bot.telegram.send = capture
-    bot.sent = sent
     return bot
+
+
+def strategy(name):
+    return next(s for s in LIVE_STRATEGIES if s.name == name)
 
 
 # ------------------------------------------------------------------- plans
@@ -83,9 +97,16 @@ def test_plan_with_trailing_stop_has_no_target():
     assert p.target is None and p.trail_atr == 3.0 and p.bar_hours == 4
 
 
-def test_plan_stop_stays_inside_band():
+def test_plan_stop_stays_inside_general_band():
     p = build_plan("S", "LONG", 100.0, 100.0, FUNDING_EXITS, LIMITS, "rules", "x", 1)
     assert p.stop == pytest.approx(100.0 * (1 - LIMITS.max_stop_pct / 100.0))
+
+
+def test_plan_uses_the_strategy_own_stop_band():
+    tight = build_plan("S", "LONG", 100.0, 0.1, SIGNAL_15M_EXITS, LIMITS, "x", "signal_15m", 0.25)
+    wide = build_plan("S", "LONG", 100.0, 50.0, SIGNAL_15M_EXITS, LIMITS, "x", "signal_15m", 0.25)
+    assert tight.stop == pytest.approx(98.75)
+    assert wide.stop == pytest.approx(97.0)
 
 
 def test_drift_guard():
@@ -105,8 +126,7 @@ def series(closes):
 
 def test_trend_breakout_fires_long_on_new_high_in_uptrend():
     closes = list(np.linspace(100, 200, 260)) + [215.0]
-    bars = series(closes)
-    hits = trend_breakout(20, 50, 200)(bars)
+    hits = trend_breakout(20, 50, 200)(series(closes))
     assert hits and hits[-1][0] == len(closes) - 1 and hits[-1][1] == "LONG"
 
 
@@ -135,26 +155,33 @@ def test_funding_contrarian_needs_extreme_and_cross():
     assert funding_contrarian(0.0005, -0.0002)(calm) == []
 
 
-def test_live_strategies_declare_what_rules_may_trade():
-    by = {s.name: s for s in LIVE_STRATEGIES}
-    assert by["trend_4h"].rules_trade and by["funding_1h"].rules_trade
-    assert by["trend_1h"].rules_trade is False  # It lost money on its own: desk candidates only.
+def test_signal_15m_only_reads_the_newest_bar():
+    rng = np.random.default_rng(1)
+    closes = 100 + np.cumsum(rng.normal(0.2, 0.3, 200))
+    hits = signal_15m(25)(series(list(closes)))
+    assert all(h[0] == len(closes) - 1 for h in hits)
+
+
+def test_every_live_strategy_has_a_source_label():
+    assert list(SOURCE_LABELS)[:4] == [s.name for s in LIVE_STRATEGIES]
+    assert {"news", "desk"} <= set(SOURCE_LABELS)
 
 
 # ------------------------------------------------------------------- bot wiring
 
-def test_four_paper_books_with_separate_venues(tmp_path):
+def test_each_source_has_a_cex_and_a_dex_book(tmp_path):
     bot = make_bot(tmp_path)
-    assert set(bot.books) == {"rules_cex", "rules_dex", "desk_cex", "desk_dex"}
-    assert bot.books["rules_dex"].venue.name == "hyperliquid"
-    assert bot.books["desk_cex"].venue.name == "binance"
+    assert set(bot.books) == {f"{s}_{k}" for s in SOURCE_LABELS for k in ("cex", "dex")}
+    assert bot.books["news_dex"].venue.name == "hyperliquid"
+    assert bot.books["trend_4h_cex"].venue.name == "binance"
 
 
 def test_venue_with_results_keeps_a_book_on_its_venue():
     assert venue_with_results(None) is None
-    assert venue_with_results({"rules_cex": {"venue": "bybit", "history": [], "open": []}}) is None
-    assert venue_with_results({"rules_cex": {"venue": "bybit", "history": [{"net": 1}], "open": []}}) == "bybit"
+    assert venue_with_results({"news_cex": {"venue": "bybit", "history": [], "open": []}}) is None
+    assert venue_with_results({"news_cex": {"venue": "bybit", "history": [{"net": 1}], "open": []}}) == "bybit"
     assert venue_with_results({"desk_cex": {"venue": "binance", "history": [], "open": [{"symbol": "S"}]}}) == "binance"
+    assert venue_with_results({"news_dex": {"venue": "hyperliquid", "history": [{"net": 1}], "open": []}}) is None
 
 
 async def test_pick_cex_retries_before_giving_up_on_binance():
@@ -213,104 +240,256 @@ async def test_hyperliquid_rate_limit_stops_requests_for_a_while():
 
 def test_saved_book_on_other_venue_is_not_reused(tmp_path):
     bot = make_bot(tmp_path)
-    saved = {"rules_cex": {**bot.books["rules_cex"].state, "venue": "bybit", "balance": 5.0}}
+    saved = {"news_cex": {**bot.books["news_cex"].state, "venue": "bybit", "balance": 5.0}}
     bot.books = {}
     bot._make_books(saved)
-    assert bot.books["rules_cex"].state["balance"] != 5.0
+    assert bot.books["news_cex"].state["balance"] != 5.0
 
 
 def test_snapshot_round_trip(tmp_path):
     bot = make_bot(tmp_path)
-    bot.books["rules_cex"].state["balance"] = 77.0
+    bot.books["news_cex"].state["balance"] = 77.0
+    bot.log("sistem", "deneme")
+    bot.sample_curve()
     bot.save_local()
-    assert (tmp_path / "state.json").exists()
-    import json
     data = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
-    assert data["books"]["rules_cex"]["balance"] == 77.0
-    assert data["version"] == 2
+    assert data["books"]["news_cex"]["balance"] == 77.0
+    assert data["version"] == 3
+    assert data["events"][0]["text"] == "deneme"
+    assert data["curve"][0]["e"]["news_cex"] == 77.0
 
 
-async def test_rules_strategy_opens_on_rules_books_only(tmp_path):
+def test_curve_thins_old_points_and_keeps_its_time_range(tmp_path):
     bot = make_bot(tmp_path)
-    strategy = next(s for s in LIVE_STRATEGIES if s.name == "funding_1h")
-    await bot._open_rules(strategy, "SOLUSDT", "LONG", 1.0)
-    assert len(bot.books["rules_cex"].state["open"]) == 1
-    assert len(bot.books["rules_dex"].state["open"]) == 1
+    bot.curve = [{"t": i, "e": {}} for i in range(1500)]
+    bot.sample_curve()
+    assert len(bot.curve) < 1500
+    assert bot.curve[0]["t"] == 0
+    assert bot.curve[-2]["t"] == 1499
+
+
+async def test_strategy_opens_only_on_its_own_books(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    assert len(bot.books["funding_1h_cex"].state["open"]) == 1
+    assert len(bot.books["funding_1h_dex"].state["open"]) == 1
+    assert bot.books["trend_4h_cex"].state["open"] == []
     assert bot.books["desk_cex"].state["open"] == []
-    assert any("SAHTE İŞLEM AÇILDI" in m for m in bot.sent)
 
 
-async def test_data_failure_is_reported_and_no_trade_opens(tmp_path):
+async def test_trades_stay_out_of_telegram_and_go_to_the_event_log(tmp_path):
     bot = make_bot(tmp_path)
-    bot.market.fail = True
-    strategy = next(s for s in LIVE_STRATEGIES if s.name == "funding_1h")
-    await bot._open_rules(strategy, "SOLUSDT", "LONG", 1.0)
-    assert bot.books["rules_cex"].state["open"] == []
-    assert any("veri yok" in m for m in bot.sent)
-
-
-async def test_positions_close_through_update_loop_and_notify(tmp_path):
-    bot = make_bot(tmp_path)
-    strategy = next(s for s in LIVE_STRATEGIES if s.name == "funding_1h")
-    await bot._open_rules(strategy, "SOLUSDT", "LONG", 1.0)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
     bot.market.price = 90.0
     await bot.update_positions()
-    assert bot.books["rules_cex"].state["open"] == []
-    assert bot.books["rules_cex"].state["history"][0]["exit_reason"] == "stop"
-    assert any("SAHTE İŞLEM KAPANDI" in m for m in bot.sent)
+    assert bot.sent == []
+    kinds = [e["kind"] for e in bot.events]
+    assert "açılış" in kinds and "kapanış" in kinds
+
+
+async def test_no_limit_on_position_count(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    symbols = [f"S{i}" for i in range(12)]
+    for symbol in symbols:
+        await bot.open_for_source(s.name, symbol, "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    book = bot.books["funding_1h_cex"]
+    assert len(book.state["open"]) >= 9
+    # Only money can stop a trade, and the reason is recorded.
+    assert set(book.state["rejected"]) <= {"serbest teminat yetersiz"}
+
+
+async def test_data_failure_is_logged_and_no_trade_opens(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.market.fail = True
+    s = strategy("funding_1h")
+    results = await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    assert bot.books["funding_1h_cex"].state["open"] == []
+    assert "veri yok" in results["funding_1h_cex"]["rejected"]
+    assert any("veri yok" in e["text"] for e in bot.events)
+
+
+async def test_positions_close_through_update_loop(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    bot.market.price = 97.5  # Past the 2% stop, not as far as liquidation.
+    await bot.update_positions()
+    book = bot.books["funding_1h_cex"]
+    assert book.state["open"] == []
+    assert book.state["history"][0]["exit_reason"] == "stop"
+
+
+async def test_gap_past_liquidation_loses_the_margin(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    book = bot.books["funding_1h_cex"]
+    margin = book.state["open"][0]["margin"]
+    bot.market.price = 80.0
+    await bot.update_positions()
+    [trade] = book.state["history"]
+    assert trade["exit_reason"] == "tasfiye"
+    assert trade["gross"] == pytest.approx(-margin)
+
+
+async def test_polling_fetches_a_real_book_only_to_fill_an_exit(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    before = bot.market.book_calls
+    await bot.update_positions()
+    await bot.update_positions()
+    assert bot.market.book_calls == before
+    bot.market.price = 90.0
+    await bot.update_positions()
+    assert bot.market.book_calls > before
+
+
+async def test_exit_waits_when_real_book_is_unavailable(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("funding_1h")
+    await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
+    bot.market.price = 90.0
+    original = bot.market.book
+
+    async def broken(venue, symbol, depth=20):
+        raise DataError(venue, "HTTP 500")
+    bot.market.book = broken
+    await bot.update_positions()
+    assert len(bot.books["funding_1h_cex"].state["open"]) == 1
+    bot.market.book = original
+    await bot.update_positions()
+    assert bot.books["funding_1h_cex"].state["open"] == []
+
+
+def _wicked(market, low):
+    original = market.candles
+
+    async def candles(venue, symbol, interval, limit=200):
+        c = await original(venue, symbol, interval, limit)
+        return Candles(c.ts, c.opens, c.highs, np.full(len(c.lows), low), c.closes, c.volumes)
+    market.candles = candles
 
 
 async def test_wick_before_position_opened_does_not_stop_it(tmp_path):
-    """Candles from before entry must be ignored, whichever book opened first."""
     bot = make_bot(tmp_path)
-    book = bot.books["rules_cex"]
-    plan = Plan("SOLUSDT", "LONG", 99.0, None, "rules", max_hold_hours=100)
-    q = Quote([[100.0, 1000]], [[100.1, 1000]], time.time())
-    book.try_open(plan, q, FILTERS)
-    # FakeMarket candle lows are price - 0.1. Make them cross the stop for candles before entry only.
-    original = bot.market.candles
-
-    async def wicked(venue, symbol, interval, limit=200):
-        c = await original(venue, symbol, interval, limit)
-        lows = c.lows.copy()
-        lows[:-1] = 90.0  # Everything older than the newest candle wicked through the stop.
-        return Candles(c.ts, c.opens, c.highs, lows, c.closes, c.volumes)
-    bot.market.candles = wicked
-    bot.market.price = 100.0
+    book = bot.books["news_cex"]
+    plan = Plan("SOLUSDT", "LONG", 99.0, None, "news", max_hold_hours=100)
+    book.try_open(plan, Quote([[100.0, 1000]], [[100.1, 1000]], time.time()), FILTERS)
+    _wicked(bot.market, 90.0)
     await bot.update_positions()
     assert len(book.state["open"]) == 1
+
+
+async def test_wick_after_position_opened_stops_it(tmp_path):
+    bot = make_bot(tmp_path)
+    book = bot.books["news_cex"]
+    plan = Plan("SOLUSDT", "LONG", 99.0, None, "news", max_hold_hours=100)
+    book.try_open(plan, Quote([[100.0, 1000]], [[100.1, 1000]], time.time()), FILTERS)
+    book.state["open"][0]["range_from_ms"] = 0
+    _wicked(bot.market, 90.0)
+    await bot.update_positions()
+    assert book.state["open"] == []
+    assert book.state["history"][0]["exit_reason"] == "stop"
 
 
 async def test_signals_fall_back_to_hyperliquid_without_a_cex(tmp_path):
     bot = make_bot(tmp_path)
     bot.cex_venue = None
     assert bot.signal_venue == "hyperliquid"
-    bars = await bot._bars("SOLUSDT", next(s for s in LIVE_STRATEGIES if s.name == "trend_4h"))
-    assert len(bars.ts) > 0
+    assert len((await bot._bars("SOLUSDT", strategy("trend_4h"))).ts) > 0
     with pytest.raises(DataError):
-        await bot._bars("SOLUSDT", next(s for s in LIVE_STRATEGIES if s.name == "funding_1h"))
+        await bot._bars("SOLUSDT", strategy("funding_1h"))
 
 
 async def test_old_signal_is_not_traded_after_a_restart(tmp_path):
     bot = make_bot(tmp_path)
-    strategy = next(s for s in LIVE_STRATEGIES if s.name == "trend_4h")
+    s = strategy("trend_4h")
     closes = np.array(list(np.linspace(100, 200, 260)) + [215.0])
     ts = (time.time() * 1000 // 14_400_000 - len(closes) - 3) * 14_400_000 + np.arange(len(closes)) * 14_400_000.0
     bars = bars_from("SOLUSDT", Candles(ts, closes, closes + 0.2, closes - 0.2, closes, np.full(len(closes), 100.0)),
                      None, 14_400_000)
-    assert strategy.make(bars)[-1][0] == len(closes) - 1
-    await bot._after_bar(strategy, bars)
+    assert s.make(bars)[-1][0] == len(closes) - 1
+    await bot._after_bar(s, bars)
     assert all(b.state["open"] == [] for b in bot.books.values())
 
 
-async def test_desk_request_without_key_opens_nothing(tmp_path):
+async def test_fresh_signal_opens_its_books(tmp_path):
+    bot = make_bot(tmp_path)
+    s = strategy("trend_4h")
+    closes = np.array(list(np.linspace(100, 200, 260)) + [215.0])
+    last_close_ms = time.time() * 1000 // 14_400_000 * 14_400_000
+    ts = last_close_ms - 14_400_000 * (len(closes) - np.arange(len(closes)))
+    bars = bars_from("SOLUSDT", Candles(ts, closes, closes + 0.2, closes - 0.2, closes, np.full(len(closes), 100.0)),
+                     None, 14_400_000)
+    if time.time() - (bars.ts[-1] + bars.bar_ms) / 1000.0 > 300:
+        pytest.skip("Too far past the 4-hour boundary for a fresh signal.")
+    await bot._after_bar(s, bars)
+    assert len(bot.books["trend_4h_cex"].state["open"]) == 1
+
+
+# ------------------------------------------------------------------- news trades
+
+def headline(sentiment, symbols=("SOLUSDT",), id="n1", title="Solana haberi"):
+    return NewsItem(id, title, "S", "https://x.test/a", time.time(), list(symbols), 2, False, sentiment)
+
+
+async def test_good_news_goes_long_and_bad_news_goes_short(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.news.ingest([headline(1), headline(-1, ("ETHUSDT",), id="n2", title="Ethereum haberi")], time.time())
+    await bot.trade_news()
+    by_symbol = {p["symbol"]: p for p in bot.books["news_cex"].state["open"]}
+    assert by_symbol["SOLUSDT"]["direction"] == "LONG"
+    assert by_symbol["ETHUSDT"]["direction"] == "SHORT"
+    assert len(bot.books["news_dex"].state["open"]) == 2
+    assert bot.books["desk_cex"].state["open"] == []
+
+
+async def test_news_trade_records_what_happened_and_fires_once(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.news.ingest([headline(1)], time.time())
+    await bot.trade_news()
+    [action] = bot.news.actions["n1"]
+    assert action["direction"] == "LONG"
+    assert set(action["opened"]) == {"binance", "hyperliquid"}
+    await bot.trade_news()
+    assert len(bot.news.actions["n1"]) == 1
+
+
+async def test_unclear_news_opens_nothing(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.news.ingest([headline(0)], time.time())
+    await bot.trade_news()
+    assert bot.books["news_cex"].state["open"] == []
+    assert "n1" not in bot.news.actions
+
+
+async def test_news_data_failure_is_recorded(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.news.ingest([headline(1)], time.time())
+
+    async def broken(*args, **kwargs):
+        raise DataError("binance", "HTTP 500")
+    bot.market.candles = broken
+    await bot.trade_news()
+    assert "veri yok" in bot.news.actions["n1"][0]["rejected"]["hepsi"]
+
+
+# ------------------------------------------------------------------- desk
+
+async def test_desk_request_without_key_opens_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     bot = make_bot(tmp_path)
     req = DeskRequest("SOLUSDT", "trend_4h", "x", "LONG", {"last_close": 100.0}, 1.0, TREND_4H_EXITS, 4)
     await bot._queue_request(req)
     assert bot.desk_queue.empty()
 
 
-async def test_desk_long_decision_opens_on_desk_books_with_half_size_and_records_session(tmp_path):
+async def test_desk_long_decision_opens_on_desk_books_with_half_size(tmp_path):
     bot = make_bot(tmp_path)
     record = {"id": "s1", "action": "LONG", "reason": "Masa onayladı", "size_factor": 0.5, "symbol": "SOLUSDT",
               "label": "x", "cost_usd": 0.1, "turns": []}
@@ -322,9 +501,8 @@ async def test_desk_long_decision_opens_on_desk_books_with_half_size_and_records
     req = DeskRequest("SOLUSDT", "funding_1h", "x", "LONG", {"last_close": 100.0}, 1.0, FUNDING_EXITS, 1)
     await bot.run_desk_request(req)
     pos = bot.books["desk_cex"].state["open"][0]
-    assert pos["session_id"] == "s1"
-    assert pos["origin"] == "desk"
-    assert bot.books["rules_cex"].state["open"] == []
+    assert pos["session_id"] == "s1" and pos["origin"] == "desk"
+    assert bot.books["funding_1h_cex"].state["open"] == []
     full = PaperBook("x", "binance", "desk", LIMITS)
     q = Quote([[99.95, 1000]], [[100.05, 1000]], time.time())
     p_full = full.try_open(Plan("SOLUSDT", "LONG", pos["stop"], pos["target"], "desk"), q, FILTERS)["opened"]
@@ -344,113 +522,38 @@ async def test_desk_decision_is_dropped_when_price_ran_away(tmp_path):
     req = DeskRequest("SOLUSDT", "funding_1h", "x", "LONG", {"last_close": 100.0}, 1.0, FUNDING_EXITS, 1)
     await bot.run_desk_request(req)
     assert bot.books["desk_cex"].state["open"] == []
-    assert any("çok oynadı" in m for m in bot.sent)
+    assert any("çok oynadı" in e["text"] for e in bot.events)
 
 
-async def test_reset_keeps_llm_spend(tmp_path):
+async def test_reset_keeps_llm_spend_and_clears_paper(tmp_path):
     bot = make_bot(tmp_path)
     bot.desk.state["spent_total"] = 3.0
-    bot.books["rules_cex"].state["balance"] = 50.0
+    bot.books["news_cex"].state["balance"] = 50.0
+    bot.sample_curve()
     bot.reset_paper()
-    assert bot.books["rules_cex"].state["balance"] == pytest.approx(99.0)
+    assert bot.books["news_cex"].state["balance"] == pytest.approx(99.0)
     assert bot.desk.state["spent_total"] == 3.0
+    assert bot.curve == []
 
 
-# ------------------------------------------------------------------- reports must tell the truth
+# ------------------------------------------------------------------- short telegram texts
 
-def closed_trade(bot, name="rules_cex", net_bid=104.5):
-    book = bot.books[name]
-    plan = Plan("SOLUSDT", "LONG", 98.0, 104.0, "rules")
-    q = Quote([[100.0, 1000]], [[100.1, 1000]], NOW)
-    book.try_open(plan, q, FILTERS, now=NOW)
-    return book.on_quote("SOLUSDT", Quote([[net_bid, 1000]], [[net_bid + 0.1, 1000]], NOW + 60))
-
-
-def test_every_report_builds_on_empty_state_and_says_paper(tmp_path):
-    bot = make_bot(tmp_path)
-    for text in (reports.format_status(bot), reports.format_positions(bot), reports.format_trades(bot),
-                 reports.format_arbitrage(bot), reports.format_costs(bot), reports.format_gate(bot)):
-        assert "SAHTE" in text
-    assert "Henüz kapanan işlem yok" in reports.format_trades(bot)
-    assert "Açık pozisyon yok" in reports.format_positions(bot)
-    assert "Henüz masa oturumu" in reports.format_session(None)
-    assert "Henüz haber" in reports.format_news(bot)
-
-
-def test_status_says_why_desk_is_off(tmp_path, monkeypatch):
+def test_status_is_short_says_paper_and_explains_a_closed_desk(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     bot = make_bot(tmp_path)
-    assert "ANTHROPIC_API_KEY" in reports.format_status(bot)
+    text = reports.format_status(bot)
+    assert "SAHTE" in text and "ANTHROPIC_API_KEY" in text
+    assert len(text) < 1500
 
 
-def test_trade_report_matches_ledger(tmp_path):
+def test_digest_totals_match_books(tmp_path):
     bot = make_bot(tmp_path)
-    [t] = closed_trade(bot)
-    text = reports.format_close_event(bot.books["rules_cex"], t)
-    assert f"{t['net']:+,.2f}$" in text
-    assert "SAHTE" in text
-    assert f"{bot.books['rules_cex'].state['balance']:.2f}$" in text
-
-
-def test_gate_fails_with_no_history_and_warns_it_is_not_proof(tmp_path):
-    bot = make_bot(tmp_path)
-    text = reports.format_gate(bot)
-    assert "KANITLAMAZ" in text
-    assert "✅ GEÇTİ" not in text
-
-
-def test_gate_passes_only_when_every_check_passes(tmp_path):
-    bot = make_bot(tmp_path)
-    book = bot.books["rules_cex"]
-    book.state["started_at"] = time.time() - 8 * 86400
-    book.state["history"] = [{"net": 1.0, "closed_at": NOW} for _ in range(10)] + [{"net": -1.0, "closed_at": NOW}]
-    book.state["wins"], book.state["losses"] = 10, 1
-    row = next(r for r in reports.gate_result(bot) if r["book"] is book)
-    assert row["passed"] is True
-    book.state["max_drawdown"] = 50.0
-    row = next(r for r in reports.gate_result(bot) if r["book"] is book)
-    assert row["passed"] is False
-
-
-def test_desk_gate_is_charged_for_llm_spend(tmp_path):
-    bot = make_bot(tmp_path)
-    book = bot.books["desk_cex"]
-    book.state["started_at"] = time.time() - 8 * 86400
-    book.state["history"] = [{"net": 1.0, "closed_at": NOW} for _ in range(10)] + [{"net": -1.0, "closed_at": NOW}]
-    book.state["wins"], book.state["losses"] = 10, 1
-    bot.desk.state["spent_total"] = 40.0
-    row = next(r for r in reports.gate_result(bot) if r["book"] is book)
-    assert row["passed"] is False
-
-
-def test_session_report_shows_every_voice(tmp_path):
-    record = {"symbol": "SOLUSDT", "label": "x", "action": "NO_TRADE", "reason": "Risk sorumlusu veto etti",
-              "cost_usd": 0.12, "turns": [{"role": "Boğa", "stance": "LONG", "conviction": 70, "argument": "yükselir"},
-                                          {"role": "Risk sorumlusu", "stance": "FLAT", "conviction": 50, "argument": "dur",
-                                           "veto": True}]}
-    text = reports.format_session(record)
-    assert "İŞLEM YOK" in text and "yükselir" in text and "VETO" in text and "0.1200$" in text
-
-
-def test_arbitrage_report_shows_errors_and_scans(tmp_path):
-    bot = make_bot(tmp_path)
-    bot.arb.record_error("dex_dex", "arbitrum: HTTP 429", time.time())
-    text = reports.format_arbitrage(bot)
-    assert "HTTP 429" in text
-    assert "Henüz tarama yok" in text
-
-
-def test_arbitrage_report_says_when_a_kind_cannot_be_measured(tmp_path):
-    bot = make_bot(tmp_path)
-    bot.arb.mark_unavailable("perp_cex_cex", "İki vadeli borsa gerekir, bu sunucudan erişilen: bybit", time.time())
-    text = reports.format_arbitrage(bot)
-    assert "Ölçülemiyor: İki vadeli borsa gerekir" in text
-
-
-def test_evidence_report_states_no_edge():
-    text = reports.format_evidence()
-    assert "rastgele" in text and "anlamlı" in text
+    bot.books["news_cex"].state["balance"] = 110.0
+    t = reports.totals(bot)
+    expected = sum(b.equity() - b.state["initial"] for b in bot.books.values())
+    assert t["net"] == pytest.approx(expected)
+    assert reports.money(t["net"]) in reports.format_digest(bot)
 
 
 def test_split_message_respects_limit_and_keeps_text():
@@ -465,12 +568,11 @@ def test_split_message_respects_limit_and_keeps_text():
 def telegram(tmp_path):
     bot = make_bot(tmp_path)
     t = Telegram(FakeSession(), bot, token="x", chat_id="42")
-    sent = []
+    t.sent = []
 
     async def capture(text, keyboard=False):
-        sent.append(text)
+        t.sent.append(text)
     t.send = capture
-    t.sent = sent
     return t, bot
 
 
@@ -482,16 +584,22 @@ def test_every_keyboard_button_is_a_command():
 
 def test_turkish_letters_match_commands(tmp_path):
     t, _ = telegram(tmp_path)
-    for text in ("🧾 İşlemler", "İŞLEMLER", "KANIT", "Kanıt", "Yardım"):
+    for text in ("YARDIM", "Yardım", "SIFIRLA", "📊 Durum"):
         assert "tanımıyorum" not in t.build_reply(text)
 
 
 def test_every_command_builds_a_reply(tmp_path):
     t, _ = telegram(tmp_path)
     for text in COMMANDS:
-        if COMMANDS[text] == "reset_do":
-            continue
-        assert t.build_reply(text)
+        if COMMANDS[text] != "reset_do":
+            assert t.build_reply(text)
+
+
+def test_moved_commands_point_to_the_panel(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "EXTERNAL_URL", "https://panel.test")
+    t, _ = telegram(tmp_path)
+    for command in ("/pozisyon", "/islemler", "/masa", "/haber", "/arbitraj", "/maliyet", "/test", "/kanit"):
+        assert "https://panel.test" in t.build_reply(command)
 
 
 def test_unknown_text_does_not_match_by_substring(tmp_path):
@@ -509,19 +617,19 @@ async def test_only_owner_chat_is_served(tmp_path):
 
 async def test_stale_message_is_ignored(tmp_path):
     t, bot = telegram(tmp_path)
-    bot.books["rules_cex"].state["balance"] = 50.0
+    bot.books["news_cex"].state["balance"] = 50.0
     update = {"message": {"chat": {"id": 42}, "text": "/sifirla onay", "date": NOW - 3600}}
     assert await t.handle_update(update, now=NOW) is None
-    assert bot.books["rules_cex"].state["balance"] == 50.0
+    assert bot.books["news_cex"].state["balance"] == 50.0
 
 
 async def test_reset_needs_explicit_confirmation(tmp_path):
     t, bot = telegram(tmp_path)
-    bot.books["rules_cex"].state["balance"] = 50.0
+    bot.books["news_cex"].state["balance"] = 50.0
     assert "onay" in t.build_reply("/sifirla")
-    assert bot.books["rules_cex"].state["balance"] == 50.0
+    assert bot.books["news_cex"].state["balance"] == 50.0
     t.build_reply("/sifirla onay")
-    assert bot.books["rules_cex"].state["balance"] == pytest.approx(99.0)
+    assert bot.books["news_cex"].state["balance"] == pytest.approx(99.0)
 
 
 async def test_report_bug_gives_error_not_numbers(tmp_path):
@@ -572,3 +680,105 @@ async def test_no_pinned_backup_starts_fresh():
     t = BackupApi([{"pinned_message": {"message_id": 1, "text": "hi"}}], [])
     assert await t.load_backup() is None
     assert t.backup_message_id is None
+
+
+# ------------------------------------------------------------------- web panel
+
+def test_sanitize_removes_values_json_cannot_hold():
+    assert sanitize({"a": float("inf"), "b": [float("nan"), 1.5], "c": "x"}) == {"a": None, "b": [None, 1.5], "c": "x"}
+
+
+@pytest.fixture
+async def panel(tmp_path):
+    bot = make_bot(tmp_path)
+    client = TestClient(TestServer(make_app(bot)))
+    await client.start_server()
+    yield client, bot
+    await client.close()
+
+
+async def test_panel_page_and_assets_load_with_a_strict_policy(panel):
+    client, _ = panel
+    page = await client.get("/")
+    assert page.status == 200 and "text/html" in page.headers["Content-Type"]
+    assert "SAHTE PARA" in await page.text()
+    policy = page.headers["Content-Security-Policy"]
+    assert "script-src 'self'" in policy and "unsafe-inline" not in policy
+    for path, kind in (("/static/app.js", "javascript"), ("/static/style.css", "css")):
+        response = await client.get(path)
+        assert response.status == 200 and kind in response.headers["Content-Type"]
+
+
+async def test_panel_serves_only_its_own_files(panel):
+    client, _ = panel
+    assert (await client.get("/static/secret.env")).status == 404
+    assert (await client.get("/static/..%2f..%2fsettings.py")).status == 404
+
+
+async def test_panel_has_no_way_to_change_anything(panel):
+    client, _ = panel
+    for path in ("/", "/api/state", "/api/curve", "/status"):
+        assert (await client.post(path)).status == 405
+
+
+async def test_state_reports_positions_and_trades_truthfully(panel):
+    client, bot = panel
+    book = bot.books["news_cex"]
+    book.try_open(Plan("SOLUSDT", "LONG", 98.0, 104.0, "news", "news", "Haber: x"),
+                  Quote([[100.0, 1000]], [[100.1, 1000]], NOW), FILTERS, now=NOW)
+    book.try_open(Plan("ETHUSDT", "LONG", 98.0, 104.0, "news", "news", "Haber: y"),
+                  Quote([[100.0, 1000]], [[100.1, 1000]], NOW), FILTERS, now=NOW)
+    [closed] = book.on_quote("ETHUSDT", Quote([[104.5, 1000]], [[104.6, 1000]], NOW + 60))
+    response = await client.get("/api/state")
+    state = await response.json()
+    assert state["mode"] == "paper"
+    row = next(b for b in state["books"] if b["key"] == "news_cex")
+    assert row["trades"] == 1 and row["open"] == 1
+    assert row["balance"] == pytest.approx(book.state["balance"])
+    assert row["total_net"] == pytest.approx(book.equity() - 100.0)
+    [position] = state["positions"]
+    assert position["symbol"] == "SOLUSDT" and position["source_label"] == "Haber"
+    p = book.state["open"][0]
+    gross = (p["last_mark"] - p["entry"]) * p["qty"]
+    assert position["gross_now"] == pytest.approx(gross)
+    assert position["net_now"] < gross
+    [trade] = state["trades"]
+    assert trade["net"] == pytest.approx(closed["net"])
+    assert trade["fees"] == pytest.approx(closed["entry_fee"] + closed["exit_fee"])
+
+
+async def test_state_json_is_valid_when_a_book_has_no_losses(panel):
+    client, bot = panel
+    book = bot.books["news_cex"]
+    book.try_open(Plan("ETHUSDT", "LONG", 98.0, 104.0, "news"), Quote([[100.0, 1000]], [[100.1, 1000]], NOW), FILTERS, now=NOW)
+    book.on_quote("ETHUSDT", Quote([[104.5, 1000]], [[104.6, 1000]], NOW + 60))
+    response = await client.get("/api/state")
+    assert "Infinity" not in await response.text()
+    state = await response.json()
+    assert next(b for b in state["books"] if b["key"] == "news_cex")["profit_factor"] is None
+
+
+async def test_state_shows_news_with_its_action_and_desk_reason(panel, monkeypatch):
+    client, bot = panel
+    bot.news.ingest([headline(1)], time.time())
+    await bot.trade_news()
+    state = await (await client.get("/api/state")).json()
+    [item] = state["news"]["items"]
+    assert item["sentiment"] == 1
+    assert set(item["actions"][0]["opened"]) == {"binance", "hyperliquid"}
+    assert "desk" in state and "arbitrage" in state and "evidence" in state
+    assert len(state["arbitrage"]["kinds"]) == 5
+
+
+async def test_curve_endpoint_gives_points_and_book_identity(panel):
+    client, bot = panel
+    bot.sample_curve()
+    data = await (await client.get("/api/curve")).json()
+    assert len(data["points"]) == 1
+    assert data["books"]["news_dex"] == {"source": "news", "kind": "DEX", "initial": 100.0}
+
+
+async def test_status_endpoint_stays_small_for_health_checks(panel):
+    client, _ = panel
+    data = await (await client.get("/status")).json()
+    assert data["ok"] is True and data["mode"] == "paper"

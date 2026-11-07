@@ -1,8 +1,11 @@
-"""Collects crypto news from RSS. Headlines are untrusted text from the internet.
+"""Collects crypto news from RSS and decides, by keywords, whether a headline is good or bad.
 
-This module removes markup and control characters and limits length. Tagging uses word boundaries,
-so "SOLD" never matches SOL. No LLM runs here: a keyword score decides which headlines are worth a
-desk session, which keeps API spend down.
+Headlines are untrusted text from the internet. This module removes markup and control characters
+and limits length. Tagging uses word boundaries, so "SOLD" never matches SOL.
+
+The keyword reading is crude and misses context. It runs without any API cost, and the panel shows
+each headline next to the position it caused, so its quality can be judged. No past test exists:
+RSS feeds only keep recent items.
 """
 
 import email.utils
@@ -27,11 +30,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; LeverageSignalSniper/2.0)"}
 MAX_TITLE_CHARS = 200
 MAX_ITEMS = 300
 MAX_AGE_SECONDS = 48 * 3600
-FRESH_SECONDS = 20 * 60
+# A headline older than this is probably priced in, so it opens no position.
+FRESH_SECONDS = 30 * 60
 
 # Tickers that are also English words match only in capitals; names match in any case.
 _NAMES = {
-    "BTCUSDT": (r"bitcoin", r"BTC"),
+    "BTCUSDT": (r"bitcoin(?! cash)", r"BTC"),
     "ETHUSDT": (r"ethereum|ether", r"ETH"),
     "SOLUSDT": (r"solana", r"SOL"),
     "XRPUSDT": (r"xrp|ripple", r"XRP"),
@@ -41,6 +45,16 @@ _NAMES = {
     "LINKUSDT": (r"chainlink", r"LINK"),
     "AVAXUSDT": (r"avalanche", r"AVAX"),
     "SUIUSDT": (r"sui network", r"SUI|Sui"),
+    "ZECUSDT": (r"zcash", r"ZEC"),
+    "HYPEUSDT": (r"hyperliquid", r"HYPE"),
+    "NEARUSDT": (r"near protocol", r"NEAR"),
+    "ENAUSDT": (r"ethena", r"ENA"),
+    "UNIUSDT": (r"uniswap", r"UNI"),
+    "WLDUSDT": (r"worldcoin", r"WLD"),
+    "BCHUSDT": (r"bitcoin cash", r"BCH"),
+    "AAVEUSDT": (r"aave", r"AAVE"),
+    "ARBUSDT": (r"arbitrum", r"ARB"),
+    "LTCUSDT": (r"litecoin", r"LTC"),
 }
 SYMBOL_PATTERNS = {
     symbol: (re.compile(rf"\b(?:{name})\b", re.IGNORECASE), re.compile(rf"\b(?:{ticker})\b"))
@@ -61,6 +75,27 @@ MEDIUM_IMPACT = re.compile(
 MACRO = re.compile(r"\b(fed|fomc|cpi|inflation|tariffs?|treasury yields?|rate (cut|hike)s?|powell|jobs report)\b",
                    re.IGNORECASE)
 
+# Words that report a price move ("surges", "plunges") are left out on purpose: the move has
+# already happened by the time the headline appears.
+NEGATIVE = re.compile(
+    r"\b(hack(ed|s|ers?)?|exploit(ed|s)?|drain(ed|s)?|stolen|theft|bankrupt\w*|insolven\w*|delist\w*|outage|"
+    r"halt(ed|s)? (withdrawals?|trading|deposits?)|lawsuit|sue[sd]|indict\w*|arrest\w*|banned|bans|sanction\w*|"
+    r"depeg\w*|fraud\w*|breach\w*|seized?|crackdown|sec charges?|rejects?|rejected|rate hikes?|outflows?)\b",
+    re.IGNORECASE,
+)
+POSITIVE = re.compile(
+    r"\b(etf approv\w*|approv\w* .{0,30}etf|approved|partnership|partners with|launches mainnet|mainnet launch\w*|"
+    r"upgrade (goes live|activated|completed?)|lists? on|listing on|inflows?|acquisition|acquires?|adopts?|adoption|"
+    r"integrat\w*|rate cuts?|accumulat\w*|buys|bought)\b",
+    re.IGNORECASE,
+)
+# "SEC drops lawsuit" contains a bad word but is good news.
+REVERSAL = re.compile(
+    r"\b(dismiss\w*|drops?|dropped|wins?|won|ends?|ended|lifts?|lifted|overturn\w*)\b.{0,25}"
+    r"\b(lawsuit|case|charges?|ban|sanctions?)\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class NewsItem:
@@ -72,6 +107,7 @@ class NewsItem:
     symbols: List[str]
     impact: int  # 0 none, 1 medium, 2 high
     macro: bool
+    sentiment: int = 0  # +1 good, -1 bad, 0 unclear
 
 
 def clean_text(text: str) -> str:
@@ -95,6 +131,16 @@ def score_impact(title: str) -> int:
     return 0
 
 
+def score_sentiment(title: str) -> int:
+    """+1 good, -1 bad, 0 when neither or both appear. A mixed headline opens no position."""
+    if REVERSAL.search(title):
+        return 1
+    good, bad = bool(POSITIVE.search(title)), bool(NEGATIVE.search(title))
+    if good == bad:
+        return 0
+    return 1 if good else -1
+
+
 def parse_date(raw: Optional[str]) -> Optional[float]:
     if not raw:
         return None
@@ -113,15 +159,17 @@ def parse_feed(xml_text: str, source: str, now: float) -> List[NewsItem]:
         if not title or published is None or now - published > MAX_AGE_SECONDS:
             continue
         key = re.sub(r"[^a-z0-9]+", "", title.lower())
+        link = clean_text(node.findtext("link", ""))[:300]
         items.append(NewsItem(
             id=hashlib.sha1(key.encode()).hexdigest()[:16],
             title=title,
             source=source,
-            link=clean_text(node.findtext("link", ""))[:300],
+            link=link if link.startswith(("https://", "http://")) else "",
             published=published,
             symbols=tag_symbols(title),
             impact=score_impact(title),
             macro=bool(MACRO.search(title)),
+            sentiment=score_sentiment(title),
         ))
     return items
 
@@ -131,11 +179,14 @@ class NewsDesk:
         state = state or {}
         self.items: Dict[str, NewsItem] = {k: NewsItem(**v) for k, v in state.get("items", {}).items()}
         self.triggered: List[str] = list(state.get("triggered", []))
+        self.traded: List[str] = list(state.get("traded", []))
+        self.actions: Dict[str, List[dict]] = dict(state.get("actions", {}))
         self.feed_status: Dict[str, dict] = {}
         self.last_fetch: float = 0.0
 
     def to_state(self) -> dict:
-        return {"items": {k: asdict(v) for k, v in self.items.items()}, "triggered": self.triggered[-500:]}
+        return {"items": {k: asdict(v) for k, v in self.items.items()}, "triggered": self.triggered[-500:],
+                "traded": self.traded[-500:], "actions": self.actions}
 
     def ingest(self, items: List[NewsItem], now: float) -> List[NewsItem]:
         """Adds new items and returns those not seen before. The same story from two feeds is one."""
@@ -146,9 +197,11 @@ class NewsDesk:
                 new.append(item)
         for key in [k for k, v in self.items.items() if now - v.published > MAX_AGE_SECONDS]:
             del self.items[key]
+            self.actions.pop(key, None)
         if len(self.items) > MAX_ITEMS:
             for key, _ in sorted(self.items.items(), key=lambda kv: kv[1].published)[:len(self.items) - MAX_ITEMS]:
                 del self.items[key]
+                self.actions.pop(key, None)
         return new
 
     async def refresh(self, session: aiohttp.ClientSession, now: Optional[float] = None) -> List[NewsItem]:
@@ -180,7 +233,7 @@ class NewsDesk:
         return sorted(rows, key=lambda i: i.published, reverse=True)[:limit]
 
     def session_triggers(self, now: float) -> List[NewsItem]:
-        """Fresh high-impact headlines naming a tracked symbol. Each one triggers at most once."""
+        """Fresh high-impact headlines naming a tracked symbol, for the desk. Each fires once."""
         out = []
         for item in sorted(self.items.values(), key=lambda i: i.published):
             if (item.impact >= 2 and item.symbols and now - item.published <= FRESH_SECONDS
@@ -188,3 +241,16 @@ class NewsDesk:
                 self.triggered.append(item.id)
                 out.append(item)
         return out
+
+    def trade_triggers(self, now: float) -> List[NewsItem]:
+        """Fresh headlines with a clear direction and a tracked symbol. Each fires once."""
+        out = []
+        for item in sorted(self.items.values(), key=lambda i: i.published):
+            if (item.sentiment != 0 and item.symbols and now - item.published <= FRESH_SECONDS
+                    and item.id not in self.traded):
+                self.traded.append(item.id)
+                out.append(item)
+        return out
+
+    def record_action(self, item_id: str, action: dict) -> None:
+        self.actions.setdefault(item_id, []).append(action)

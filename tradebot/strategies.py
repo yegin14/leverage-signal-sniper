@@ -7,8 +7,9 @@ Evidence, 2024-11-07 to 2026-11-07, last 40% of the data, after costs, 10 symbol
   trend_4h    +0.03R per trade, n=99, t=0.1, beat 67% of random runs
   funding_1h  +0.12R per trade, n=31, t=0.5, beat 89% of random runs
   trend_1h    -0.07R per trade, n=277, no better than random
-Neither positive result is statistically distinguishable from chance. They run on paper as the
-least-bad candidates, not as proven strategies.
+  signal_15m  -0.12R per trade, n=359, 180-day test, no better than random
+None is statistically distinguishable from chance. All run on paper, each in its own book, because
+the owner wants many trades during the trial. A trade count here is not evidence of an edge.
 """
 
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
-from .signals import ema, wilder
+from .signals import compute_features, ema, evaluate, wilder
 
 HOUR_MS = 3_600_000
 Hit = Tuple[int, str, float]
@@ -42,12 +43,18 @@ class ExitRule:
     trail_atr: Optional[float]
     target_r: Optional[float]
     max_hold_hours: float
+    # Stop distance band as a percent of price; None uses the general risk limits.
+    min_stop_pct: Optional[float] = None
+    max_stop_pct: Optional[float] = None
 
 
 TREND_4H_EXITS = ExitRule(stop_atr=2.5, trail_atr=3.0, target_r=None, max_hold_hours=30 * 24)
 TREND_1H_EXITS = ExitRule(stop_atr=2.0, trail_atr=3.0, target_r=None, max_hold_hours=10 * 24)
 FUNDING_EXITS = ExitRule(stop_atr=2.0, trail_atr=None, target_r=2.0, max_hold_hours=48)
-# Exits for a desk session started by news, when no strategy supplied them.
+# signal_15m supplies its stop distance in place of an ATR, hence stop_atr=1.
+SIGNAL_15M_EXITS = ExitRule(stop_atr=1.0, trail_atr=None, target_r=2.0, max_hold_hours=24,
+                            min_stop_pct=1.25, max_stop_pct=3.0)
+# Exits for trades started by news, when no strategy supplied them.
 NEWS_EXITS = ExitRule(stop_atr=2.0, trail_atr=None, target_r=2.0, max_hold_hours=48)
 
 
@@ -139,21 +146,35 @@ def funding_contrarian(high_rate: float, low_rate: float) -> Callable[[Bars], Li
     return signals
 
 
+def signal_15m(min_score: int = 60) -> Callable[[Bars], List[Hit]]:
+    """The project's original 15-minute signal, evaluated on the newest bar only."""
+    def signals(b: Bars) -> List[Hit]:
+        i = len(b.ts) - 1
+        if i < 0:
+            return []
+        s = evaluate(compute_features(b.highs, b.lows, b.closes, b.volumes), i, min_score=min_score)
+        return [(i, s.direction, s.raw_stop_distance)] if s else []
+    return signals
+
+
 @dataclass(frozen=True)
 class LiveStrategy:
     name: str
     label: str
     interval: str
-    hours: int
+    hours: float
     bars_needed: int
     make: Callable[[Bars], List[Hit]]
     exits: ExitRule
-    rules_trade: bool  # False: only offered to the desk, because it lost money on its own
+    desk_candidate: bool  # False keeps a frequent signal from using up the desk's API budget
 
 
 LIVE_STRATEGIES = (
-    LiveStrategy("trend_4h", "4 saatlik trend kırılımı", "4h", 4, 500, trend_breakout(20), TREND_4H_EXITS, True),
-    LiveStrategy("funding_1h", "Aşırı fonlamaya karşı", "1h", 1, 120,
+    LiveStrategy("trend_4h", "4 saatlik trend", "4h", 4, 500, trend_breakout(20), TREND_4H_EXITS, True),
+    LiveStrategy("funding_1h", "Aşırı fonlama", "1h", 1, 120,
                  funding_contrarian(0.0005, -0.0002), FUNDING_EXITS, True),
-    LiveStrategy("trend_1h", "1 saatlik trend kırılımı", "1h", 1, 500, trend_breakout(72), TREND_1H_EXITS, False),
+    LiveStrategy("trend_1h", "1 saatlik trend", "1h", 1, 500, trend_breakout(72), TREND_1H_EXITS, True),
+    LiveStrategy("signal_15m", "15 dakikalık sinyal", "15m", 0.25, 200, signal_15m(), SIGNAL_15M_EXITS, False),
 )
+# Fixed order: the panel assigns chart colors by this position, so a color always means one source.
+SOURCE_LABELS = {**{s.name: s.label for s in LIVE_STRATEGIES}, "news": "Haber", "desk": "Yapay zeka masası"}

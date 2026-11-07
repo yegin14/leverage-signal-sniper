@@ -7,7 +7,7 @@ A failed request raises DataError. Nothing substitutes a price silently, so call
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 import numpy as np
@@ -153,6 +153,20 @@ class Market:
             raise DataError(venue, f"{symbol}: boş tahta")
         return Book(venue, symbol, bids, asks, time.time())
 
+    async def tops(self, venue: str) -> Dict[str, Tuple[float, float]]:
+        """Best bid and ask of every symbol in one request. Hyperliquid gives the mid for both."""
+        if venue == "binance":
+            rows = await self._get("binance", f"{BINANCE_FAPI}/fapi/v1/ticker/bookTicker")
+            return {r["symbol"]: (float(r["bidPrice"]), float(r["askPrice"])) for r in rows}
+        if venue == "bybit":
+            d = self._bybit_result(await self._get("bybit", f"{BYBIT}/v5/market/tickers", {"category": "linear"}))
+            return {r["symbol"]: (float(r["bid1Price"]), float(r["ask1Price"]))
+                    for r in d["list"] if r.get("bid1Price") and r.get("ask1Price")}
+        if venue == "hyperliquid":
+            mids = await self._hl({"type": "allMids"})
+            return {f"{k}USDT": (float(v), float(v)) for k, v in mids.items() if not k.startswith("@")}
+        raise ValueError(f"unknown venue {venue}")
+
     async def spot_book(self, venue: str, symbol: str, depth: int = 20) -> Book:
         if venue == "binance":
             # A separate source name: spot being reachable must not hide blocked futures.
@@ -226,7 +240,7 @@ class Market:
 
     async def _hl_contexts(self) -> Dict[str, dict]:
         at, cached = self._hl_ctx
-        if cached is not None and time.time() - at < 30.0:
+        if cached is not None and time.time() - at < 120.0:
             return cached
         meta, ctxs = await self._hl({"type": "metaAndAssetCtxs"})
         cached = {u["name"]: {**c, "szDecimals": u["szDecimals"], "maxLeverage": u["maxLeverage"]}
@@ -256,7 +270,8 @@ class Market:
                 float(s["priceFilter"]["tickSize"]))
         elif venue == "hyperliquid":
             ctx = await self._hl_contexts()
-            self._filters[key] = Filters(HL_MIN_NOTIONAL, 10.0 ** -int(ctx[coin(symbol)]["szDecimals"]))
+            c = ctx[coin(symbol)]
+            self._filters[key] = Filters(HL_MIN_NOTIONAL, 10.0 ** -int(c["szDecimals"]), 0.0, int(c["maxLeverage"]))
         if key not in self._filters:
             raise DataError(venue, f"{symbol}: parite bulunamadı")
         return self._filters[key]

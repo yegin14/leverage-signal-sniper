@@ -100,7 +100,12 @@ def test_decide_head_flat_and_low_conviction_and_veto():
 def test_news_alone_cannot_open_a_trade():
     t = turns(technical=("SHORT", 70), news=("LONG", 95), flow=("FLAT", 50), risk=("FLAT", 50), head=("LONG", 95))
     out = decide(t, 60)
-    assert out["action"] == "NO_TRADE" and "haber tek başına" in out["reason"]
+    assert out["action"] == "NO_TRADE" and "desteklemiyor" in out["reason"]
+
+
+def test_news_session_may_trade_on_the_news_analyst():
+    t = turns(technical=("SHORT", 70), news=("LONG", 95), flow=("FLAT", 50), risk=("FLAT", 50), head=("LONG", 95))
+    assert decide(t, 60, news_triggered=True)["action"] == "LONG"
 
 
 def test_decide_without_head_is_no_trade():
