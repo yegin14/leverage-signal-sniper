@@ -380,6 +380,13 @@ def test_arbitrage_report_shows_errors_and_scans(tmp_path):
     assert "Henüz tarama yok" in text
 
 
+def test_arbitrage_report_says_when_a_kind_cannot_be_measured(tmp_path):
+    bot = make_bot(tmp_path)
+    bot.arb.mark_unavailable("perp_cex_cex", "İki vadeli borsa gerekir, bu sunucudan erişilen: bybit", time.time())
+    text = reports.format_arbitrage(bot)
+    assert "Ölçülemiyor: İki vadeli borsa gerekir" in text
+
+
 def test_evidence_report_states_no_edge():
     text = reports.format_evidence()
     assert "rastgele" in text and "anlamlı" in text

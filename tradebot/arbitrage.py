@@ -226,8 +226,14 @@ class ArbLedger:
     def reset(self):
         self.state = self.fresh_state()
 
+    def mark_unavailable(self, kind: str, reason: str, now: float):
+        k = self.state["kinds"][kind]
+        k["unavailable"] = reason
+        k["last_scan_at"] = now
+
     def observe(self, kind: str, best: Optional[Opportunity], now: float):
         k = self.state["kinds"][kind]
+        k.pop("unavailable", None)
         k["scans"] += 1
         k["last_scan_at"] = now
         k["last_error"] = None
@@ -317,12 +323,13 @@ class ArbLedger:
 
 class ArbScanner:
     def __init__(self, market: Market, session: aiohttp.ClientSession, ledger: ArbLedger,
-                 cex_venues: Sequence[str] = ("binance", "bybit"), notional: float = settings.ARB_NOTIONAL_USD,
-                 recheck_seconds: float = settings.ARB_RECHECK_SECONDS):
+                 cex_venues: Sequence[str] = ("binance", "bybit"), spot_venues: Sequence[str] = ("binance", "bybit"),
+                 notional: float = settings.ARB_NOTIONAL_USD, recheck_seconds: float = settings.ARB_RECHECK_SECONDS):
         self.market = market
         self.ledger = ledger
         self.quoter = ArbitrumQuoter(session)
         self.cex_venues = tuple(cex_venues)
+        self.spot_venues = tuple(spot_venues)
         self.notional = notional
         self.recheck_seconds = recheck_seconds
         self.events: List[dict] = []
@@ -340,7 +347,15 @@ class ArbScanner:
 
     async def scan_perps(self, symbols: Sequence[str], now: Optional[float] = None):
         venues = (*self.cex_venues, "hyperliquid")
-        best: Dict[str, Optional[Opportunity]] = {"perp_cex_cex": None, "perp_cex_dex": None}
+        best: Dict[str, Optional[Opportunity]] = {}
+        if len(self.cex_venues) >= 2:
+            best["perp_cex_cex"] = None
+        else:
+            self.ledger.mark_unavailable("perp_cex_cex", self._need_two("vadeli", self.cex_venues), time.time())
+        if self.cex_venues:
+            best["perp_cex_dex"] = None
+        else:
+            self.ledger.mark_unavailable("perp_cex_dex", "Bu sunucudan vadeli CEX'e erişilemiyor", time.time())
         for symbol in symbols:
             books = await self._perp_books(symbol, venues)
             await self._close_pairs(symbol, books)
@@ -348,12 +363,17 @@ class ArbScanner:
             for i, x in enumerate(names):
                 for y in names[i + 1:]:
                     kind = "perp_cex_dex" if "hyperliquid" in (x, y) else "perp_cex_cex"
-                    op = self._perp_opportunity(kind, symbol, books[x], books[y])
-                    best[kind] = best_of([best[kind], op])
+                    if kind in best:
+                        best[kind] = best_of([best[kind], self._perp_opportunity(kind, symbol, books[x], books[y])])
         for kind, op in best.items():
             self.ledger.observe(kind, op, time.time())
             if self.ledger.wants(op):
                 await self._try_pair(op)
+
+    @staticmethod
+    def _need_two(market: str, reachable: Sequence[str]) -> str:
+        names = ", ".join(reachable) if reachable else "hiçbiri"
+        return f"İki {market} borsa gerekir, bu sunucudan erişilen: {names}"
 
     async def _try_pair(self, op: Opportunity):
         await asyncio.sleep(self.recheck_seconds)
@@ -396,9 +416,10 @@ class ArbScanner:
                     self.events.append({"type": "arb_close", "kind": kind, "trade": trade})
 
     async def scan_spot(self, symbols: Sequence[str] = SPOT_SYMBOLS):
-        if len(self.cex_venues) < 2:
+        if len(self.spot_venues) < 2:
+            self.ledger.mark_unavailable("spot_cex_cex", self._need_two("spot", self.spot_venues), time.time())
             return
-        a, b = self.cex_venues[:2]
+        a, b = self.spot_venues[:2]
         best = None
         other = rebalance_usd(self.notional, settings.ARB_CAPITAL_USD / 2.0)
         fa, fb = SPOT_TAKER_PCT[a], SPOT_TAKER_PCT[b]
@@ -467,14 +488,17 @@ class ArbScanner:
         return dex_best, cex_best
 
     async def _cex_dex(self, per_token: Dict[str, dict], gas: float) -> Optional[Opportunity]:
-        """Binance spot against the best Arbitrum pool, both ways."""
+        """A CEX spot book against the best Arbitrum pool, both ways."""
         best = None
-        fee_pct = SPOT_TAKER_PCT["binance"]
+        if not self.spot_venues:
+            return None
+        venue = self.spot_venues[0]
+        fee_pct = SPOT_TAKER_PCT[venue]
         one_swap_gas = gas / 2.0
         other = one_swap_gas + rebalance_usd(self.notional, settings.ARB_CAPITAL_USD / 2.0)
         for name, (address, decimals, pair) in TOKENS.items():
             try:
-                book = await self.market.spot_book("binance", pair)
+                book = await self.market.spot_book(venue, pair)
             except DataError:
                 continue
             quotes = {k: v for k, v in per_token[name].items() if v}
@@ -488,9 +512,9 @@ class ArbScanner:
                 proceeds = price * qty
                 fee = fee_usd(proceeds, fee_pct)
                 gross = proceeds - self.notional
-                best = best_of([best, Opportunity("spot_cex_dex", name, pool_name, "binance", self.notional, gross, fee,
+                best = best_of([best, Opportunity("spot_cex_dex", name, pool_name, venue, self.notional, gross, fee,
                                                   other, gross - fee - other)])
-            # Buy on Binance asks, sell on the best pool.
+            # Buy on the CEX asks, sell on the best pool.
             ask_price, qty2 = walk_book_notional(book.asks, self.notional)
             if qty2 > 0:
                 amount = int(qty2 * 10 ** decimals)
@@ -501,7 +525,7 @@ class ArbScanner:
                     proceeds = back_units / 10 ** USDC[1]
                     fee = fee_usd(self.notional, fee_pct)
                     gross = proceeds - self.notional
-                    best = best_of([best, Opportunity("spot_cex_dex", name, "binance", sell_name, self.notional, gross,
+                    best = best_of([best, Opportunity("spot_cex_dex", name, venue, sell_name, self.notional, gross,
                                                       fee, other, gross - fee - other)])
         return best
 
@@ -514,7 +538,10 @@ class ArbScanner:
             self.ledger.record_error("spot_cex_dex", str(e), now)
             return
         self.ledger.observe("dex_dex", dex_best, now)
-        self.ledger.observe("spot_cex_dex", cex_best, now)
+        if self.spot_venues:
+            self.ledger.observe("spot_cex_dex", cex_best, now)
+        else:
+            self.ledger.mark_unavailable("spot_cex_dex", "Bu sunucudan spot CEX'e erişilemiyor", now)
         if self.ledger.wants(dex_best) or self.ledger.wants(cex_best):
             await asyncio.sleep(self.recheck_seconds)
             try:

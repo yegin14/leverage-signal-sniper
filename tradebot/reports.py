@@ -191,7 +191,9 @@ def format_arbitrage(bot, now: Optional[float] = None) -> str:
     for key, label in KINDS.items():
         k = state["kinds"][key]
         lines.append(label)
-        if not k["scans"]:
+        if k.get("unavailable"):
+            lines.append(f"  ⚠️ Ölçülemiyor: {k['unavailable']}")
+        elif not k["scans"]:
             lines.append("  Henüz tarama yok.")
         else:
             lines.append(f"  Tarama {k['scans']} | son {age_text(now - k['last_scan_at'])}")

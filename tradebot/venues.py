@@ -148,7 +148,8 @@ class Market:
 
     async def spot_book(self, venue: str, symbol: str, depth: int = 20) -> Book:
         if venue == "binance":
-            d = await self._get("binance", f"{BINANCE_SPOT}/api/v3/depth", {"symbol": symbol, "limit": depth})
+            # A separate source name: spot being reachable must not hide blocked futures.
+            d = await self._get("binance spot", f"{BINANCE_SPOT}/api/v3/depth", {"symbol": symbol, "limit": depth})
             bids, asks = _levels(d["bids"]), _levels(d["asks"])
         elif venue == "bybit":
             d = self._bybit_result(await self._get(
@@ -285,6 +286,31 @@ class Market:
             out["binance_funding_8h_pct"] = round(fund_binance.rate * 100.0, 5)
         if not isinstance(fund_hl, Exception):
             out["hyperliquid_funding_1h_pct"] = round(fund_hl.rate * 100.0, 5)
+        if "open_interest_usd" not in out:
+            out.update(await self._bybit_flow(symbol))
+        return out
+
+    async def _bybit_flow(self, symbol: str) -> dict:
+        """Same questions asked of Bybit, for hosts where Binance futures data is blocked."""
+        out: dict = {"flow_source": "bybit"}
+        results = await asyncio.gather(
+            self._get("bybit", f"{BYBIT}/v5/market/open-interest",
+                      {"category": "linear", "symbol": symbol, "intervalTime": "15min", "limit": 8}),
+            self._get("bybit", f"{BYBIT}/v5/market/account-ratio",
+                      {"category": "linear", "symbol": symbol, "period": "15min", "limit": 1}),
+            self.funding("bybit", symbol),
+            return_exceptions=True,
+        )
+        oi, ratio, funding = results
+        if not isinstance(oi, Exception) and oi.get("retCode") == 0:
+            rows = oi["result"]["list"]
+            if len(rows) >= 2:  # Newest first.
+                last, first = float(rows[0]["openInterest"]), float(rows[-1]["openInterest"])
+                out["open_interest_change_2h_pct"] = round((last / first - 1.0) * 100.0, 3) if first else None
+        if not isinstance(ratio, Exception) and ratio.get("retCode") == 0 and ratio["result"]["list"]:
+            out["accounts_long_pct"] = round(float(ratio["result"]["list"][0]["buyRatio"]) * 100.0, 1)
+        if not isinstance(funding, Exception):
+            out["bybit_funding_8h_pct"] = round(funding.rate * 100.0, 5)
         return out
 
     async def fear_greed(self) -> Optional[dict]:

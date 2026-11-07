@@ -104,6 +104,8 @@ class Bot:
         self.notified: Dict[str, float] = {}
         self.loop_errors: Dict[str, dict] = {}
         self.backup_dirty = False
+        self.perp_venues: List[str] = []
+        self.spot_venues: List[str] = []
 
     # ---------------------------------------------------------------- setup and persistence
 
@@ -165,12 +167,20 @@ class Bot:
                 self.arb = ArbLedger(saved["arb"])
             self.seen_bars = saved.get("seen_bars", {})
             self.news_cooldown = saved.get("news_cooldown", {})
-        cex_for_arb = [v for v in ("binance", "bybit") if await self._reachable(v)]
-        self.scanner = ArbScanner(self.market, self.session, self.arb, cex_for_arb)
+        self.perp_venues = [v for v in ("binance", "bybit") if await self._reachable(v)]
+        self.spot_venues = [v for v in ("binance", "bybit") if await self._spot_reachable(v)]
+        self.scanner = ArbScanner(self.market, self.session, self.arb, self.perp_venues, self.spot_venues)
 
     async def _reachable(self, venue: str) -> bool:
         try:
             await self.market.book(venue, "BTCUSDT", 5)
+            return True
+        except DataError:
+            return False
+
+    async def _spot_reachable(self, venue: str) -> bool:
+        try:
+            await self.market.spot_book(venue, "BTCUSDT", 5)
             return True
         except DataError:
             return False
@@ -517,6 +527,8 @@ class Bot:
             await asyncio.sleep(BACKUP_CHECK_SECONDS)
             if self.backup_dirty or time.time() - last >= BACKUP_SECONDS:
                 self.backup_dirty = False
+        self.perp_venues: List[str] = []
+        self.spot_venues: List[str] = []
                 last = time.time()
                 try:
                     await self.backup_now()
@@ -538,6 +550,11 @@ class Bot:
             "desk": {"enabled": self.desk.enabled, "reason": self.desk.disabled_reason, "model": self.desk.model,
                      "sessions": self.desk.state["sessions_total"], "spent_usd": round(self.desk.state["spent_total"], 4)},
             "news_items": len(self.news.items),
+            "reachable": {"perp": self.perp_venues, "spot": self.spot_venues},
+            "arbitrage": {key: {"scans": k["scans"], "gross_bps": k["last_gross_bps"], "net_bps": k["last_net_bps"],
+                                "best_net_bps": k["best_net_bps"], "trades": k["trades"], "net_usd": k["net_usd"],
+                                "unavailable": k.get("unavailable"), "error": k["last_error"]}
+                          for key, k in self.arb.state["kinds"].items()},
             "errors": self.data_errors(now),
         })
 

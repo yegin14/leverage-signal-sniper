@@ -1,6 +1,6 @@
 import pytest
 
-from tradebot.arbitrage import (POOLS, ArbLedger, Opportunity, book_edge, decode_aggregate3, decode_quote,
+from tradebot.arbitrage import (POOLS, ArbLedger, ArbScanner, Opportunity, book_edge, decode_aggregate3, decode_quote,
                                 dex_round_trip, encode_aggregate3, encode_quote, rebalance_usd)
 from tradebot.costs import gas_usd
 from tradebot.venues import Book
@@ -172,6 +172,35 @@ def test_pair_funding_is_charged():
     trade = led.maybe_close_pair("perp_cex_cex", pair, book(bid=100.6, ask=100.7),
                                  book("bybit", bid=100.5, ask=100.55), 7200.0)
     assert trade["other"] == pytest.approx(0.02)
+
+
+class OneVenueMarket:
+    async def book(self, venue, symbol, depth=20):
+        return book(venue)
+
+    async def spot_book(self, venue, symbol, depth=20):
+        return book(venue)
+
+
+async def test_blocked_venue_is_reported_instead_of_showing_empty_results():
+    led = ArbLedger()
+    scanner = ArbScanner(OneVenueMarket(), None, led, cex_venues=("bybit",), spot_venues=("bybit",))
+    await scanner.scan_perps(["SOLUSDT"])
+    await scanner.scan_spot()
+    kinds = led.state["kinds"]
+    assert "bybit" in kinds["perp_cex_cex"]["unavailable"]
+    assert kinds["perp_cex_cex"]["scans"] == 0
+    assert "bybit" in kinds["spot_cex_cex"]["unavailable"]
+    # Bybit against Hyperliquid can still be measured.
+    assert kinds["perp_cex_dex"]["scans"] == 1
+    assert "unavailable" not in kinds["perp_cex_dex"]
+
+
+def test_measuring_again_clears_the_unavailable_note():
+    led = ArbLedger()
+    led.mark_unavailable("dex_dex", "x", 1.0)
+    led.observe("dex_dex", None, 2.0)
+    assert "unavailable" not in led.state["kinds"]["dex_dex"]
 
 
 def test_ledger_state_round_trip_and_reset():
