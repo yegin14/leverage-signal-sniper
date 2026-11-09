@@ -83,9 +83,10 @@ class Engine:
                 "day_net": self.day_net(), "drawdown": self.drawdown()}
 
     def record_decision(self, d: Decision):
-        row = {"strategy": d.strategy, "symbol": d.symbol, "direction": d.direction, "bar_ts": d.bar_ts, "at": d.at,
-               "result": d.result, "passed": d.passed, "checks": [asdict(c) for c in d.checks],
-               "plan": asdict(d.plan) if d.plan else None}
+        row = {"strategy": d.strategy, "symbol": d.symbol, "direction": d.direction, "bar_ts": float(d.bar_ts), "at": float(d.at),
+               "result": d.result, "passed": bool(d.passed),
+               "checks": [{**asdict(c), "ok": bool(c.ok), "info_only": bool(c.info_only)} for c in d.checks],
+               "plan": {k: float(v) if isinstance(v, (int, float)) or hasattr(v, "item") else v for k, v in asdict(d.plan).items()} if d.plan else None}
         self.state["decisions"].insert(0, row)
         del self.state["decisions"][MAX_ROWS:]
 
@@ -360,8 +361,15 @@ def load_state() -> Optional[dict]:
         return None
 
 
+def _plain(o):
+    """numpy scalars (np.bool_, np.float64) as plain Python values: json refuses them."""
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(f"{type(o).__name__} is not JSON serializable")
+
+
 def save_state(state: dict):
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = config.STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state), encoding="utf-8")
+    tmp.write_text(json.dumps(state, default=_plain), encoding="utf-8")
     tmp.replace(config.STATE_FILE)

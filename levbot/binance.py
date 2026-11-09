@@ -103,8 +103,10 @@ class Binance:
     async def premium(self, symbol: str) -> dict:
         return await self._request("GET", self.data_host, "/fapi/v1/premiumIndex", {"symbol": symbol})
 
-    async def book_ticker(self, symbol: str) -> dict:
-        return await self._request("GET", self.trade_host, "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
+    async def book_ticker(self, symbol: str, real_market: bool = True) -> dict:
+        """Best bid and ask. The entry checks read the real market: the demo book is much thinner (spreads 0.04-0.24%
+        against 0.001-0.01% on 2026-11-09) and would block nearly every signal."""
+        return await self._request("GET", self.data_host if real_market else self.trade_host, "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
 
     async def load_rules(self) -> Dict[str, SymbolRules]:
         info = await self._request("GET", self.trade_host, "/fapi/v1/exchangeInfo")

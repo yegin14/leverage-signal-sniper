@@ -103,7 +103,7 @@ class FakeClient:
     async def funding_history(self, symbol, limit=50):
         return []
 
-    async def book_ticker(self, symbol):
+    async def book_ticker(self, symbol, real_market=True):
         c = klines(now=self.now)[-2][4]
         return {"bidPrice": str(c - 0.01), "askPrice": str(c + 0.01)}
 
@@ -200,3 +200,14 @@ async def test_a_failed_stop_closes_the_position_at_once():
 
 def test_only_the_4h_strategy_runs_by_default():
     assert [s.key for s in strategy_mod.STRATEGIES] == ["trend4h_confirmed"]
+
+
+def test_state_with_numpy_values_saves(tmp_path, monkeypatch):
+    import json
+    from levbot import engine as eng
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "STATE_FILE", tmp_path / "s.json")
+    state = fresh_state()
+    state["decisions"].append({"passed": np.bool_(True), "x": np.float64(1.5)})
+    eng.save_state(state)
+    assert json.loads((tmp_path / "s.json").read_text())["decisions"][0] == {"passed": True, "x": 1.5}
