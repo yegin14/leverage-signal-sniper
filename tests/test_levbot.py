@@ -3,7 +3,7 @@ import time
 import numpy as np
 import pytest
 
-from levbot import config
+from levbot import config, strategy as strategy_mod
 from levbot.binance import SymbolRules, fmt
 from levbot.engine import Engine, fresh_state
 from levbot.strategy import BY_KEY, bars_from_klines, decide, latest_signal, size, trail_stop
@@ -155,6 +155,8 @@ async def test_signal_opens_with_an_exchange_stop_and_the_close_is_booked_from_f
     now = now - (now % HOUR) + 30  # 30 seconds after an hourly close
     client = FakeClient(now)
     engine = Engine(client, fresh_state())
+    import levbot.engine as eng
+    eng.STRATEGIES = (strategy_mod.BY_KEY["trend1h"],)
     await engine.scan_once(now)
     opened = [t for t in engine.state["open"] if t["symbol"] == "SOLUSDT"]
     assert opened, engine.state["decisions"][:2]
@@ -187,8 +189,14 @@ async def test_a_failed_stop_closes_the_position_at_once():
         raise BinanceError(400, -1, "rejected")
     client.place_stop = broken
     engine = Engine(client, fresh_state())
+    import levbot.engine as eng
+    eng.STRATEGIES = (strategy_mod.BY_KEY["trend1h"],)
     await engine.scan_once(now)
     assert not engine.state["open"]
     assert client.orders[-1][3] is True  # reduce-only close
     d = next(x for x in engine.state["decisions"] if x["strategy"] == "trend1h")
     assert "Zarar-kes kurulamadı" in d["result"]
+
+
+def test_only_the_4h_strategy_runs_by_default():
+    assert [s.key for s in strategy_mod.STRATEGIES] == ["trend4h_confirmed"]

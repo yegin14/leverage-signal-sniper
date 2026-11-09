@@ -52,6 +52,8 @@ SYMBOLS = tuple(s.strip() for s in os.getenv(
     "ZECUSDT,HYPEUSDT,NEARUSDT,ENAUSDT,UNIUSDT,WLDUSDT,BCHUSDT,AAVEUSDT,ARBUSDT,LTCUSDT",
 ).split(",") if s.strip())
 
+ENABLED_STRATEGIES = tuple(s.strip() for s in os.getenv("ENABLED_STRATEGIES", "trend4h_confirmed").split(",") if s.strip())
+
 SYNC_SECONDS = _float("SYNC_SECONDS", 15.0)
 PORT = int(_float("PORT", 8080))
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")

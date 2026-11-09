@@ -37,7 +37,7 @@ class StrategyDef:
     exits: ExitRule
 
 
-STRATEGIES = (
+ALL_STRATEGIES = (
     StrategyDef("trend4h_confirmed", "4 saat trend + onay",
                 "4 saatlik mum son 20 mumun en yükseğini (en düşüğünü) kırar ve 50/200 ortalamalar aynı yönü gösterir. "
                 "6 onaydan en az 5'i tutmalı. Zarar-kes 2,5 ATR, kâr 3 ATR geriden izlenir.",
@@ -51,7 +51,10 @@ STRATEGIES = (
                 "Zarar-kes 2 ATR, kâr 3 ATR geriden izlenir.",
                 "1h", 1, 500, trend_breakout(72), 6, 4, TREND_1H_EXITS),
 )
-BY_KEY = {s.key: s for s in STRATEGIES}
+BY_KEY = {s.key: s for s in ALL_STRATEGIES}
+# Only the 4h strategy runs (owner's choice 2026-11-09): in the replay the 1h trend lost money with an 80$ drawdown
+# over two years, and the 1h full-confirmation strategy never traded.
+STRATEGIES = tuple(BY_KEY[k] for k in config.ENABLED_STRATEGIES if k in BY_KEY)
 
 
 @dataclass

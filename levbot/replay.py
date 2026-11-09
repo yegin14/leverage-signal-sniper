@@ -23,7 +23,7 @@ from tradebot.strategies import Bars, atr, resample
 
 from . import config
 from .binance import SymbolRules
-from .strategy import STRATEGIES, decide, size, trail_stop
+from .strategy import ALL_STRATEGIES, STRATEGIES, decide, size, trail_stop
 
 HOUR = 3_600_000
 SLIP = config.SLIPPAGE_PCT / 100.0
@@ -39,7 +39,7 @@ def cut(b: Bars, end: int, keep: int = 700) -> Bars:
 
 
 def run(hourly: Dict[str, Bars], days: int, only=None) -> dict:
-    chosen = [s for s in STRATEGIES if not only or s.key in only]
+    chosen = [s for s in ALL_STRATEGIES if s.key in only] if only else list(STRATEGIES)
     frames = {1: hourly, 4: {s: resample(b, 4) for s, b in hourly.items()}}
     atrs = {h: {s: atr(b) for s, b in frames[h].items()} for h in frames}
     end_ms = min(b.ts[-1] for b in hourly.values())
@@ -148,7 +148,7 @@ def run(hourly: Dict[str, Bars], days: int, only=None) -> dict:
         close(p, float(hourly[p["symbol"]].closes[i]), end_ms, "test bitti (açıktı)")
 
     by = {}
-    for s in STRATEGIES:
+    for s in chosen:
         cs = [c for c in closed if c["strategy"].key == s.key]
         by[s.label] = {"trades": len(cs), "wins": sum(c["net"] > 0 for c in cs), "net": round(sum(c["net"] for c in cs), 2),
                        "avg_r": round(float(np.mean([c["r"] for c in cs])), 3) if cs else 0.0}
