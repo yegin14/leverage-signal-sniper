@@ -1,6 +1,8 @@
-"""Entry point. Paper trading only: this code base has no order placement."""
+"""Entry point: the Binance leverage bot and its panel (python main.py)."""
 
-from tradebot.app import main
+import asyncio
+
+from levbot.__main__ import main
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kaldıraç Botu</title>
+<style>
+:root {
+  --bg: #f4f6f9; --card: #ffffff; --ink: #1b2330; --muted: #667085; --line: #e4e7ec;
+  --green: #12a150; --green-bg: #e7f6ee; --red: #d92d20; --red-bg: #fdecea; --blue: #2e6be6; --blue-bg: #e8effc;
+  --amber: #b54708; --amber-bg: #fef3e2;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f141b; --card: #171d26; --ink: #e6e9ee; --muted: #8a94a6; --line: #263040;
+    --green: #3ccf7f; --green-bg: #12301f; --red: #ff6b5e; --red-bg: #3a1714; --blue: #6c9cff; --blue-bg: #17264a;
+    --amber: #f5a64a; --amber-bg: #3a2810; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line);
+  padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+h1 { margin: 0; font-size: 18px; }
+.badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.badge.demo { background: var(--amber-bg); color: var(--amber); }
+.badge.live { background: var(--red-bg); color: var(--red); }
+.muted { color: var(--muted); }
+main { max-width: 1280px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 22px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.tile .small { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.card h2 { margin: 0 0 4px; font-size: 16px; }
+.card .lead { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
+.pos { color: var(--green); } .neg { color: var(--red); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; }
+.empty { color: var(--muted); padding: 12px 0; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.long { background: var(--green-bg); color: var(--green); }
+.pill.short { background: var(--red-bg); color: var(--red); }
+.pill.ok { background: var(--green-bg); color: var(--green); }
+.pill.no { background: var(--red-bg); color: var(--red); }
+.pill.info { background: var(--blue-bg); color: var(--blue); }
+.strats { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.strat { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.strat h3 { margin: 0 0 6px; font-size: 15px; }
+.strat p { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
+.strat .nums { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+details.decision { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+details.decision summary { cursor: pointer; padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; list-style: none; }
+details.decision summary::-webkit-details-marker { display: none; }
+details.decision[open] summary { border-bottom: 1px solid var(--line); }
+.checks { padding: 8px 12px 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.group h4 { margin: 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.check { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.check .mark { width: 18px; flex: none; font-weight: 700; }
+.check .mark.ok { color: var(--green); } .check .mark.no { color: var(--red); } .check .mark.info { color: var(--muted); }
+.check .d { color: var(--muted); font-size: 12px; }
+.banner { background: var(--red-bg); color: var(--red); border-radius: 10px; padding: 10px 14px; }
+.banner.warn { background: var(--amber-bg); color: var(--amber); }
+svg.curve { width: 100%; height: 160px; }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 6px 16px; font-size: 13px; }
+.rules div span { color: var(--muted); }
+.events { max-height: 320px; overflow-y: auto; font-size: 13px; }
+.events div { padding: 5px 0; border-bottom: 1px solid var(--line); }
+@media (max-width: 600px) { main { padding: 10px; } header { padding: 10px 12px; } .tile .value { font-size: 19px; } }
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;gap:10px;align-items:center">
+    <h1>Kaldıraç Botu · Binance</h1>
+    <span id="mode" class="badge demo">DEMO</span>
+  </div>
+  <div id="fresh" class="muted">Bağlanıyor…</div>
+</header>
+<main>
+  <div id="banners"></div>
+  <section class="tiles" id="tiles"></section>
+  <section class="card"><h2>Bakiye eğrisi</h2><p class="lead">Bütçe ile başlar; kapanan işlemler, açık pozisyonların anlık kârı/zararı ve masraflar dahil. 5 dakikada bir nokta.</p><div id="curve"></div></section>
+  <section class="card"><h2>Açık pozisyonlar</h2><p class="lead">Her pozisyonun zarar-kes emri borsada durur; bot kapalı olsa bile çalışır. Trend gittikçe zarar-kes kâr yönüne taşınır.</p><div id="open"></div></section>
+  <section class="card"><h2>Son sinyaller ve kontroller</h2><p class="lead">Her sinyal girmeden önce tüm kontrollerden geçer. Bir satıra tıklayınca her kontrolün sonucu görünür. Kırmızı tek bir kontrol bile girişi engeller; mavi olanlar bilgi içindir.</p><div id="decisions"></div></section>
+  <section class="card"><h2>Stratejiler</h2><p class="lead">Üç strateji aynı bütçeyi paylaşır. Rakamlar sadece bu botun kapanan işlemleridir.</p><div class="strats" id="strats"></div></section>
+  <section class="card"><h2>Kapanan işlemler</h2><p class="lead">Net = fiyat kârı/zararı − giriş ve çıkış komisyonu ± fonlama. R = net / riske edilen tutar.</p><div id="closed"></div></section>
+  <section class="card"><h2>Kurallar</h2><div class="rules" id="rules"></div></section>
+  <section class="card"><h2>Olay günlüğü</h2><div class="events" id="events"></div></section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const nf2 = new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + nf2.format(Math.abs(v || 0)) + " $";
+const plain = (v) => nf2.format(v || 0) + " $";
+const cls = (v) => (v > 0.0049 ? "pos" : v < -0.0049 ? "neg" : "");
+const px = (v) => (v == null ? "—" : Number(v).toPrecision(6).replace(/\.?0+$/, ""));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const when = (t) => new Date(t * 1000).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const dur = (s) => { s = Math.max(0, s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d} g ${h} sa` : h ? `${h} sa ${m} dk` : `${m} dk`; };
+const dir = (d) => `<span class="pill ${d === "LONG" ? "long" : "short"}">${d === "LONG" ? "ALIŞ" : "SATIŞ"}</span>`;
+
+function table(cols, rows, empty) {
+  if (!rows.length) return `<div class="empty">${empty}</div>`;
+  return `<div class="table-wrap"><table><thead><tr>${cols.map((c) => `<th class="${c.num ? "num" : ""}">${c.h}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td class="${c.num ? "num " : ""}${c.cls ? c.cls(r) : ""}">${c.v(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function tiles(s) {
+  const m = s.money, st = s.stats;
+  const t = [
+    ["Toplam bakiye", plain(m.equity), `Başlangıç ${plain(m.budget)}`, ""],
+    ["Toplam kâr/zarar", money(m.net), `Kapanan ${money(m.closed_net)} · açık ${money(m.unrealized)}`, cls(m.net)],
+    ["Bugün", money(m.day_net), `Günlük durma: −${nf2.format(s.rules.daily_loss_stop)} $`, cls(m.day_net)],
+    ["Boşta bakiye", plain(m.free), `Pozisyonlarda ${plain(m.margin_used)} teminat`, ""],
+    ["Açık pozisyon", String(s.open.length), `En çok ${s.rules.max_open}`, ""],
+    ["Kapanan işlem", String(st.trades), st.trades ? `%${nf2.format(st.win_rate)} kazandı (${st.wins})` : "henüz yok", ""],
+    ["Zirveden düşüş", plain(m.drawdown), `Durma: ${nf2.format(s.rules.drawdown_halt)} $`, m.drawdown > 0 ? "neg" : ""],
+  ];
+  $("tiles").innerHTML = t.map(([l, v, sm, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}">${v}</div><div class="small">${sm}</div></div>`).join("");
+}
+
+function curve(s) {
+  const pts = s.curve;
+  if (pts.length < 2) { $("curve").innerHTML = `<div class="empty">Eğri birkaç dakika içinde oluşur.</div>`; return; }
+  const W = 1000, H = 160, xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]).concat([s.money.budget]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), pad = (y1 - y0) * 0.1 || 1;
+  const X = (x) => (x - x0) / (x1 - x0 || 1) * W, Y = (y) => H - (y - (y0 - pad)) / ((y1 + pad) - (y0 - pad)) * H;
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join("");
+  const last = pts[pts.length - 1][1], color = last >= s.money.budget ? "var(--green)" : "var(--red)";
+  $("curve").innerHTML = `<svg class="curve" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Bakiye eğrisi">
+    <line x1="0" x2="${W}" y1="${Y(s.money.budget)}" y2="${Y(s.money.budget)}" stroke="var(--line)" stroke-dasharray="6 6"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg>
+    <div class="muted" style="display:flex;justify-content:space-between;font-size:12px"><span>${when(x0)}</span><span>Kesikli çizgi: başlangıç ${plain(s.money.budget)}</span><span>${when(x1)}</span></div>`;
+}
+
+function openPositions(s) {
+  $("open").innerHTML = table([
+    { h: "Parite", v: (t) => `<b>${esc(t.symbol)}</b>` }, { h: "Yön", v: (t) => dir(t.direction) }, { h: "Strateji", v: (t) => esc(t.label) },
+    { h: "Giriş", num: true, v: (t) => px(t.entry) }, { h: "Şimdi", num: true, v: (t) => px(t.mark) },
+    { h: "Zarar-kes", num: true, v: (t) => px(t.stop) + (t.trail_moves ? ` <span class="muted">(${t.trail_moves}× taşındı)</span>` : "") },
+    { h: "Tasfiye", num: true, v: (t) => px(t.liquidation) }, { h: "Kaldıraç", num: true, v: (t) => t.leverage + "x" },
+    { h: "Teminat", num: true, v: (t) => plain(t.margin) }, { h: "En çok kayıp", num: true, v: (t) => plain(t.risk) },
+    { h: "Anlık", num: true, v: (t) => money(t.unrealized), cls: (t) => cls(t.unrealized) }, { h: "Süre", num: true, v: (t) => dur(t.age) },
+  ], s.open, "Açık pozisyon yok. Bot her saat başı ve 4 saatte bir yeni kapanan mumlara bakar.");
+}
+
+function decisions(s) {
+  if (!s.decisions.length) { $("decisions").innerHTML = `<div class="empty">Henüz sinyal yok. Kırılım sinyali gelince burada tüm kontrolleriyle görünür.</div>`; return; }
+  $("decisions").innerHTML = s.decisions.map((d) => {
+    const groups = {};
+    d.checks.forEach((c) => (groups[c.group] = groups[c.group] || []).push(c));
+    const failed = d.checks.filter((c) => !c.ok && !c.info_only).length;
+    const head = `<span class="muted">${when(d.at)}</span> <b>${esc(d.symbol)}</b> ${dir(d.direction)} <span>${esc(d.label)}</span>
+      <span class="pill ${d.passed && d.result.startsWith("Açıldı") ? "ok" : "no"}">${d.passed && d.result.startsWith("Açıldı") ? "GİRİLDİ" : "GİRİLMEDİ"}</span>
+      <span class="muted">${esc(d.result)}</span>`;
+    const body = Object.entries(groups).map(([g, cs]) => `<div class="group"><h4>${esc(g)}</h4>${cs.map((c) => `
+      <div class="check"><span class="mark ${c.info_only ? "info" : c.ok ? "ok" : "no"}">${c.info_only ? (c.ok ? "•" : "○") : c.ok ? "✓" : "✗"}</span>
+      <span>${esc(c.name)} <span class="d">${esc(c.detail)}</span></span></div>`).join("")}</div>`).join("");
+    const plan = d.plan ? `<div class="group"><h4>Plan</h4><div class="check"><span>Giriş ~${px(d.plan.entry)}, zarar-kes ${px(d.plan.stop)}, ${d.plan.leverage}x,
+      pozisyon ${plain(d.plan.notional)}, teminat ${plain(d.plan.margin)}, en çok kayıp ${plain(d.plan.risk)}</span></div></div>` : "";
+    return `<details class="decision"><summary>${head}${failed ? ` <span class="muted">· ${failed} kontrol tutmadı</span>` : ""}</summary><div class="checks">${body}${plan}</div></details>`;
+  }).join("");
+}
+
+function strategies(s) {
+  $("strats").innerHTML = s.strategies.map((x) => `<div class="strat"><h3>${esc(x.label)} <span class="muted" style="font-weight:400">· ${x.interval}</span></h3>
+    <p>${esc(x.description)}</p><div class="nums"><span>İşlem <b>${x.trades}</b></span><span>Kazanan <b>${x.wins}</b></span>
+    <span>Net <b class="${cls(x.net)}">${money(x.net)}</b></span><span>Ort. <b>${x.trades ? nf2.format(x.avg_r) + "R" : "—"}</b></span>
+    <span>Açık <b>${x.open}</b></span><span>Sinyal <b>${x.signals}</b> (${x.rejected} elendi)</span></div></div>`).join("");
+}
+
+function closed(s) {
+  $("closed").innerHTML = table([
+    { h: "Kapanış", v: (t) => when(t.closed_at) }, { h: "Parite", v: (t) => `<b>${esc(t.symbol)}</b>` }, { h: "Yön", v: (t) => dir(t.direction) },
+    { h: "Strateji", v: (t) => esc(t.label) }, { h: "Giriş", num: true, v: (t) => px(t.entry) }, { h: "Çıkış", num: true, v: (t) => px(t.exit) },
+    { h: "Neden", v: (t) => esc(t.reason) }, { h: "Komisyon", num: true, v: (t) => plain(t.entry_fee + t.exit_fee) },
+    { h: "Fonlama", num: true, v: (t) => money(t.funding) }, { h: "Net", num: true, v: (t) => money(t.net), cls: (t) => cls(t.net) },
+    { h: "R", num: true, v: (t) => nf2.format(t.r), cls: (t) => cls(t.r) }, { h: "Süre", num: true, v: (t) => dur(t.closed_at - t.opened_at) },
+  ], s.closed, "Henüz kapanan işlem yok.");
+}
+
+function rules(s) {
+  const r = s.rules;
+  $("rules").innerHTML = [
+    ["Toplam bütçe", plain(r.budget)], ["İşlem başı en çok teminat", plain(r.margin_per_trade)], ["İşlem başı en çok kayıp", plain(r.risk_per_trade)],
+    ["En yüksek kaldıraç", r.max_leverage + "x, izole marj"], ["En çok açık pozisyon", r.max_open], ["Aynı yönde en çok", r.max_same_direction],
+    ["Günlük zarar durması", "−" + plain(r.daily_loss_stop)], ["Zirveden düşüş durması", plain(r.drawdown_halt)],
+    ["Pariteler", r.symbols.length + " adet: " + r.symbols.map((x) => x.replace("USDT", "")).join(", ")],
+  ].map(([k, v]) => `<div><span>${k}:</span> <b>${esc(v)}</b></div>`).join("");
+}
+
+function events(s) {
+  $("events").innerHTML = s.events.length ? s.events.map((e) => `<div><span class="muted">${when(e.at)}</span> <b>${esc(e.kind)}</b> ${esc(e.text)}</div>`).join("")
+    : `<div class="empty">Henüz olay yok.</div>`;
+}
+
+function banners(s) {
+  const b = [];
+  if (s.errors.length) b.push(`<div class="banner">⚠ ${s.errors.map(esc).join(" · ")}</div>`);
+  if (s.unknown_positions.length) b.push(`<div class="banner warn">Hesapta botun açmadığı pozisyon var, bot ona dokunmaz: ${s.unknown_positions.map((p) => esc(p.symbol) + " " + p.amount).join(", ")}</div>`);
+  if (s.money.drawdown >= s.rules.drawdown_halt) b.push(`<div class="banner">Zirveden düşüş sınırına ulaşıldı: yeni işlem açılmıyor.</div>`);
+  $("banners").innerHTML = b.join("");
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
+    const live = s.mode === "live";
+    $("mode").textContent = live ? "GERÇEK PARA" : "DEMO · sahte para";
+    $("mode").className = "badge " + (live ? "live" : "demo");
+    $("fresh").textContent = `Güncellendi ${new Date(s.now * 1000).toLocaleTimeString("tr-TR")} · sonraki tarama ${s.next_scan_at ? new Date(s.next_scan_at * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }) : "—"}`;
+    const openIds = new Set([...document.querySelectorAll("details.decision[open]")].map((d) => d.dataset.k));
+    banners(s); tiles(s); curve(s); openPositions(s); decisions(s); strategies(s); closed(s); rules(s); events(s);
+    document.querySelectorAll("details.decision").forEach((d, i) => { const k = s.decisions[i] && (s.decisions[i].at + s.decisions[i].symbol + s.decisions[i].strategy);
+      d.dataset.k = k; if (openIds.has(k)) d.open = true; });
+  } catch (e) {
+    $("fresh").textContent = "Bağlantı yok, tekrar deneniyor…";
+  }
+}
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

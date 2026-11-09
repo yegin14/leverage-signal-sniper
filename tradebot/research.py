@@ -27,7 +27,7 @@ from .costs import PERP_VENUES, VenueCosts, fee_usd, sign
 from .risk import Filters, Rejected, size_position
 from .settings import RiskLimits
 from .strategies import (FUNDING_EXITS, TREND_1H_EXITS, TREND_4H_EXITS, Bars, ExitRule, atr,
-                         funding_contrarian, mean_reversion, resample, trend_breakout)
+                         confirmed, funding_contrarian, mean_reversion, resample, trend_breakout)
 from .venues import BINANCE_FAPI, HEADERS
 
 HOUR_MS = 3_600_000
@@ -120,6 +120,16 @@ VARIANTS = [
     Variant("mean_rev_1h", "RSI 20/80 filtresiz 1R", 1, mean_reversion(20, 80, False), ExitRule(1.5, None, 1.0, 24)),
     Variant("funding_1h", "fonlama +0.03/-0.01 2R", 1, funding_contrarian(0.0003, -0.0001), ExitRule(2.0, None, 2.0, 48)),
     Variant("funding_1h", "fonlama +0.05/-0.02 2R", 1, funding_contrarian(0.0005, -0.0002), FUNDING_EXITS),
+    # Declared 2026-11-09 before any result: the trend breakouts kept only when 5 or all 6 confirmations agree.
+    # The higher timeframe is 4h for 1h bars and 1 day for 4h bars.
+    Variant("confirmed_4h", "4s kırılım 20, 5/6 onay", 4, confirmed(trend_breakout(20), 5, 6), TREND_4H_EXITS),
+    Variant("confirmed_4h", "4s kırılım 20, 6/6 onay", 4, confirmed(trend_breakout(20), 6, 6), TREND_4H_EXITS),
+    Variant("confirmed_4h", "4s kırılım 55, 5/6 onay", 4, confirmed(trend_breakout(55), 5, 6), TREND_4H_EXITS),
+    Variant("confirmed_4h", "4s kırılım 55, 6/6 onay", 4, confirmed(trend_breakout(55), 6, 6), TREND_4H_EXITS),
+    Variant("confirmed_1h", "1s kırılım 24, 5/6 onay", 1, confirmed(trend_breakout(24), 5, 4), TREND_1H_EXITS),
+    Variant("confirmed_1h", "1s kırılım 24, 6/6 onay", 1, confirmed(trend_breakout(24), 6, 4), TREND_1H_EXITS),
+    Variant("confirmed_1h", "1s kırılım 72, 5/6 onay", 1, confirmed(trend_breakout(72), 5, 4), TREND_1H_EXITS),
+    Variant("confirmed_1h", "1s kırılım 72, 6/6 onay", 1, confirmed(trend_breakout(72), 6, 4), TREND_1H_EXITS),
 ]
 
 

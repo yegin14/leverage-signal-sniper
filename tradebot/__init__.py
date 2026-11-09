@@ -1,1 +1,1 @@
-"""Paper-first leverage bot: trend, funding and signal strategies, news trades and a debating agent desk."""
+"""Research tools for the leverage bot: strategy families, two-year tests against random entries, costs and sizing."""

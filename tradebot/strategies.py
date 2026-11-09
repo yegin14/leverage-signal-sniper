@@ -146,6 +146,51 @@ def funding_contrarian(high_rate: float, low_rate: float) -> Callable[[Bars], Li
     return signals
 
 
+CONFIRMATIONS = ("üst zaman dilimi trendi", "momentum aşırı değil", "hacim onayı", "oynaklık normal",
+                 "fonlama kalabalık değil", "güçlü kapanış")
+
+
+def confirmations(b: Bars, i: int, direction: str, htf_bars: int, cache: dict) -> List[bool]:
+    """
+    Six independent checks on a signal bar, each reading only bars up to i:
+      1. the higher timeframe agrees: price on the right side of a slow EMA that is itself rising or falling,
+      2. momentum is with the trade but not stretched (RSI 50-72 long, 28-50 short),
+      3. the signal bar's volume is at least 1.3x the 20-bar average,
+      4. volatility is normal: ATR as a share of price between the 20th and 90th percentile of the last 500 bars,
+      5. funding is not crowded on our side (at most +0.03% for longs, at least -0.01% for shorts),
+      6. the bar closed strongly: in the top 30% of its range for longs, bottom 30% for shorts.
+    """
+    if "htf" not in cache:
+        cache["htf"] = ema(b.closes, 50 * htf_bars)
+        cache["rsi"] = rsi(b.closes)
+        cache["atr_pct"] = atr(b) / b.closes
+    long = direction == "LONG"
+    htf, r, ap = cache["htf"], cache["rsi"][i], cache["atr_pct"]
+    back = max(1, 5 * htf_bars)
+    trend = i >= back and ((b.closes[i] > htf[i] and htf[i] > htf[i - back]) if long
+                           else (b.closes[i] < htf[i] and htf[i] < htf[i - back]))
+    momentum = bool(np.isfinite(r)) and ((50.0 <= r <= 72.0) if long else (28.0 <= r <= 50.0))
+    volume = i >= 20 and b.volumes[i] >= 1.3 * float(np.mean(b.volumes[i - 20:i]))
+    window = ap[max(0, i - 500):i]
+    window = window[np.isfinite(window)]
+    calm = len(window) >= 100 and np.isfinite(ap[i]) and np.percentile(window, 20) <= ap[i] <= np.percentile(window, 90)
+    k = np.searchsorted(b.funding_ts, b.ts[i] + b.bar_ms, side="right") - 1
+    rate = b.funding_rate[k] if k >= 0 else 0.0
+    funding = rate <= 0.0003 if long else rate >= -0.0001
+    span = b.highs[i] - b.lows[i]
+    place = (b.closes[i] - b.lows[i]) / span if span > 0 else 0.5
+    close = place >= 0.7 if long else place <= 0.3
+    return [bool(trend), bool(momentum), bool(volume), bool(calm), bool(funding), bool(close)]
+
+
+def confirmed(base: Callable[[Bars], List[Hit]], need: int, htf_bars: int) -> Callable[[Bars], List[Hit]]:
+    """The base strategy's signals, kept only when at least `need` of the six confirmations agree."""
+    def signals(b: Bars) -> List[Hit]:
+        cache: dict = {}
+        return [(i, d, a) for i, d, a in base(b) if sum(confirmations(b, i, d, htf_bars, cache)) >= need]
+    return signals
+
+
 def signal_15m(min_score: int = 60) -> Callable[[Bars], List[Hit]]:
     """The project's original 15-minute signal, evaluated on the newest bar only."""
     def signals(b: Bars) -> List[Hit]:
