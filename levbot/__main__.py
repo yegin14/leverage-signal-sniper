@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+import time
 
 import aiohttp
 from aiohttp import web
@@ -36,8 +37,11 @@ async def main():
         runner = web.AppRunner(make_app(engine))
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", config.PORT).start()
-        await engine.tell(f"🤖 Kaldıraç botu başladı ({'GERÇEK PARA' if config.MODE == 'live' else 'demo, sahte para'}). "
-                          f"Bütçe {config.BUDGET_USD:g}$, işlem başı en çok {config.MARGIN_PER_TRADE_USD:g}$ teminat.")
+        last = float(engine.state.get("last_start_msg", 0))
+        engine.state["last_start_msg"] = time.time()
+        if time.time() - last > 3600:  # A restart loop must not flood Telegram.
+            await engine.tell(f"🤖 Kaldıraç botu başladı ({'GERÇEK PARA' if config.MODE == 'live' else 'demo, sahte para'}). "
+                              f"Bütçe {config.BUDGET_USD:g}$, işlem başı en çok {config.MARGIN_PER_TRADE_USD:g}$ teminat.")
         try:
             await engine.run(lambda: save_state(engine.state))
         finally:

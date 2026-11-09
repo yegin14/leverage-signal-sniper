@@ -347,6 +347,9 @@ class Engine:
             except Exception as e:
                 logger.exception("scan failed")
                 self.errors["tarama"] = f"{type(e).__name__}: {e}"
+                if time.time() - self.state.get("last_error_msg", 0) > 3600:
+                    self.state["last_error_msg"] = time.time()
+                    await self.tell(f"⚠️ Tarama hatası: {type(e).__name__}: {e}")
             await self.sync_once()
             if time.time() - last_save >= 30:
                 save()
