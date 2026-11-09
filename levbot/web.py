@@ -40,7 +40,7 @@ def snapshot(engine) -> dict:
         "now": now, "mode": config.MODE, "started_at": st["started_at"],
         "money": {"budget": st["budget"], "equity": eq, "net": eq - st["budget"], "closed_net": engine.closed_net(),
                   "unrealized": engine.unrealized(), "day_net": engine.day_net(), "margin_used": margin,
-                  "free": max(0.0, eq - margin), "peak": st["peak"], "drawdown": max(0.0, st["peak"] - eq)},
+                  "free": max(0.0, eq - margin), "peak": st["peak"], "drawdown": engine.drawdown()},
         "stats": {"trades": len(closed), "wins": wins, "win_rate": wins / len(closed) * 100 if closed else 0.0,
                   "fees": sum(t["entry_fee"] + t["exit_fee"] for t in closed), "funding": sum(t["funding"] for t in closed)},
         "rules": {"budget": config.BUDGET_USD, "margin_per_trade": config.MARGIN_PER_TRADE_USD, "risk_per_trade": config.RISK_PER_TRADE_USD,

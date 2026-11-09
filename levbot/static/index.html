@@ -119,7 +119,7 @@ function tiles(s) {
     ["Boşta bakiye", plain(m.free), `Pozisyonlarda ${plain(m.margin_used)} teminat`, ""],
     ["Açık pozisyon", String(s.open.length), `En çok ${s.rules.max_open}`, ""],
     ["Kapanan işlem", String(st.trades), st.trades ? `%${nf2.format(st.win_rate)} kazandı (${st.wins})` : "henüz yok", ""],
-    ["Zirveden düşüş", plain(m.drawdown), `Durma: ${nf2.format(s.rules.drawdown_halt)} $`, m.drawdown > 0 ? "neg" : ""],
+    ["Zirveden düşüş", plain(m.drawdown), `Kapanan işlemlere göre · durma: ${nf2.format(s.rules.drawdown_halt)} $`, m.drawdown > 0 ? "neg" : ""],
   ];
   $("tiles").innerHTML = t.map(([l, v, sm, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}">${v}</div><div class="small">${sm}</div></div>`).join("");
 }

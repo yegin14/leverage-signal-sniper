@@ -62,6 +62,13 @@ class Engine:
         open_fees = sum(t.get("entry_fee", 0.0) for t in self.state["open"])
         return self.state["budget"] + self.closed_net() + self.unrealized() - open_fees
 
+    def realized_equity(self) -> float:
+        """Budget plus closed trades only. The drawdown stop reads this: giving back open profit is not a loss."""
+        return self.state["budget"] + self.closed_net()
+
+    def drawdown(self) -> float:
+        return max(0.0, self.state["peak"] - self.realized_equity())
+
     def day_net(self, now: Optional[float] = None) -> float:
         day = int((now or time.time()) // 86400)
         return sum(t["net"] for t in self.state["closed"] if int(t["closed_at"] // 86400) == day)
@@ -73,7 +80,7 @@ class Engine:
         return {"free": max(0.0, eq - margin), "open_count": len(open_),
                 "symbol_open": any(t["symbol"] == symbol for t in open_),
                 "same_direction": sum(t["direction"] == direction for t in open_),
-                "day_net": self.day_net(), "drawdown": max(0.0, self.state["peak"] - eq)}
+                "day_net": self.day_net(), "drawdown": self.drawdown()}
 
     def record_decision(self, d: Decision):
         row = {"strategy": d.strategy, "symbol": d.symbol, "direction": d.direction, "bar_ts": d.bar_ts, "at": d.at,
@@ -289,7 +296,7 @@ class Engine:
             if t["symbol"] not in live and time.time() - t["opened_at"] > 5:
                 await self._book_close(t)
         eq = self.equity()
-        self.state["peak"] = max(self.state["peak"], eq)
+        self.state["peak"] = max(self.state["peak"], self.realized_equity())
         curve = self.state["curve"]
         if not curve or time.time() - curve[-1][0] >= 300:
             curve.append([time.time(), round(eq, 4)])

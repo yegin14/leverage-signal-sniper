@@ -169,7 +169,7 @@ def decide(s: StrategyDef, b: Bars, direction: str, signal_atr: float, market: D
               f"fonlama %{rate:+.4f} / 8 saat"))
 
     add(Check("Risk", "Toplam düşüş sınırı", book["drawdown"] < config.DRAWDOWN_HALT_USD,
-              f"zirveden {book['drawdown']:.2f}$ (durma {config.DRAWDOWN_HALT_USD:g}$)"))
+              f"kapanan işlemlerin zirvesinden {book['drawdown']:.2f}$ (durma {config.DRAWDOWN_HALT_USD:g}$)"))
     add(Check("Risk", "Günlük zarar sınırı", -book["day_net"] < config.DAILY_LOSS_STOP_USD,
               f"bugün {book['day_net']:+.2f}$ (durma −{config.DAILY_LOSS_STOP_USD:g}$)"))
     add(Check("Risk", "Bu paritede açık pozisyon yok", not book["symbol_open"], "yok" if not book["symbol_open"] else "var"))
