@@ -23,6 +23,16 @@ from .binance import SymbolRules, round_qty
 HOUR_MS = 3_600_000
 
 
+def filtered_breakout(lookback: int, names: tuple) -> Callable[[Bars], list]:
+    """The breakout's hits kept only when every named filter of levbot.filters passes (chosen by levbot.filter_study)."""
+    from .filters import Context, apply
+    base = trend_breakout(lookback)
+
+    def signals(b: Bars) -> list:
+        return apply(base(b), b, list(names), lookback, Context())
+    return signals
+
+
 @dataclass(frozen=True)
 class StrategyDef:
     key: str
@@ -50,6 +60,10 @@ ALL_STRATEGIES = (
                 "1 saatlik mum son 72 mumun en yükseğini (en düşüğünü) kırar, ortalamalar aynı yönde ve 6 onayın hepsi tutar. "
                 "Zarar-kes 2 ATR, kâr 3 ATR geriden izlenir.",
                 "1h", 1, 500, trend_breakout(72), 6, 4, TREND_1H_EXITS),
+    StrategyDef("trend1h_filtered", "1 saat trend + filtre",
+                "1 saatlik mum son 24 mumun en yükseğini (en düşüğünü) kırar; kırılım temiz (0,25–2 ATR), trend güçlü (ADX ≥ 25) "
+                "ve sonraki mum da seviyenin ötesinde kapanır. Giriş o mumdan sonra. Zarar-kes 2 ATR, kâr 3 ATR geriden izlenir.",
+                "1h", 1, 500, filtered_breakout(24, ("retest", "adx25", "strength")), 0, 4, TREND_1H_EXITS),
 )
 BY_KEY = {s.key: s for s in ALL_STRATEGIES}
 # Only the 4h strategy runs (owner's choice 2026-11-09): in the replay the 1h trend lost money with an 80$ drawdown
