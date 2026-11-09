@@ -33,7 +33,7 @@ SYMBOLS = tuple(os.getenv(
     "ZECUSDT,HYPEUSDT,NEARUSDT,ENAUSDT,UNIUSDT,WLDUSDT,BCHUSDT,AAVEUSDT,ARBUSDT,LTCUSDT",
 ).split(","))
 
-CEX_VENUE = os.getenv("CEX_VENUE", "auto")  # auto picks the first reachable of binance, bybit
+CEX_VENUE = os.getenv("CEX_VENUE", "binance")  # Binance Global only; "auto" picks the first reachable of binance, bybit
 DEX_VENUE = "hyperliquid"
 SIGNAL_INTERVAL = "15m"
 SIGNAL_INTERVAL_SECONDS = 900

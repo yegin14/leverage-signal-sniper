@@ -170,10 +170,9 @@ def test_every_live_strategy_has_a_source_label():
 
 # ------------------------------------------------------------------- bot wiring
 
-def test_each_source_has_a_cex_and_a_dex_book(tmp_path):
+def test_each_source_has_one_binance_book(tmp_path):
     bot = make_bot(tmp_path)
-    assert set(bot.books) == {f"{s}_{k}" for s in SOURCE_LABELS for k in ("cex", "dex")}
-    assert bot.books["news_dex"].venue.name == "hyperliquid"
+    assert set(bot.books) == {f"{s}_cex" for s in SOURCE_LABELS}
     assert bot.books["trend_4h_cex"].venue.name == "binance"
 
 
@@ -383,7 +382,6 @@ async def test_strategy_opens_only_on_its_own_books(tmp_path):
     s = strategy("funding_1h")
     await bot.open_for_source(s.name, "SOLUSDT", "LONG", 1.0, s.exits, s.name, s.hours, "neden")
     assert len(bot.books["funding_1h_cex"].state["open"]) == 1
-    assert len(bot.books["funding_1h_dex"].state["open"]) == 1
     assert bot.books["trend_4h_cex"].state["open"] == []
     assert bot.books["desk_cex"].state["open"] == []
 
@@ -552,7 +550,6 @@ async def test_good_news_goes_long_and_bad_news_goes_short(tmp_path):
     by_symbol = {p["symbol"]: p for p in bot.books["news_cex"].state["open"]}
     assert by_symbol["SOLUSDT"]["direction"] == "LONG"
     assert by_symbol["ETHUSDT"]["direction"] == "SHORT"
-    assert len(bot.books["news_dex"].state["open"]) == 2
     assert bot.books["desk_cex"].state["open"] == []
 
 
@@ -562,7 +559,7 @@ async def test_news_trade_records_what_happened_and_fires_once(tmp_path):
     await bot.trade_news()
     [action] = bot.news.actions["n1"]
     assert action["direction"] == "LONG"
-    assert set(action["opened"]) == {"binance", "hyperliquid"}
+    assert set(action["opened"]) == {"binance"}
     await bot.trade_news()
     assert len(bot.news.actions["n1"]) == 1
 
@@ -873,7 +870,7 @@ async def test_state_shows_news_with_its_action_and_desk_reason(panel, monkeypat
     state = await (await client.get("/api/state")).json()
     [item] = state["news"]["items"]
     assert item["sentiment"] == 1
-    assert set(item["actions"][0]["opened"]) == {"binance", "hyperliquid"}
+    assert set(item["actions"][0]["opened"]) == {"binance"}
     assert "desk" in state and "evidence" in state
     assert "arbitrage" not in state
 
@@ -883,7 +880,7 @@ async def test_curve_endpoint_gives_points_and_book_identity(panel):
     bot.sample_curve()
     data = await (await client.get("/api/curve")).json()
     assert len(data["points"]) == 1
-    assert data["books"]["news_dex"] == {"source": "news", "kind": "DEX", "initial": 100.0}
+    assert "news_dex" not in data["books"]
 
 
 async def test_status_endpoint_stays_small_for_health_checks(panel):

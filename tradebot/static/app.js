@@ -99,7 +99,7 @@ function card(title, note, ...kids) {
 function matchesMarket(row) { return market === "ALL" || row.kind === market; }
 
 function marketFilter() {
-  const options = [["ALL", "Hepsi"], ["CEX", `CEX (${state.venues.cex || "yok"})`], ["DEX", `DEX (${state.venues.dex})`]];
+  const options = [["ALL", `Hepsi (${state.venues.cex || "borsa yok"})`]];
   return el("div", { class: "filters" }, el("span", { class: "label", text: "Piyasa" }),
     el("div", { class: "segmented", role: "group", "aria-label": "Piyasa seçimi" }, ...options.map(([key, label]) => el("button", {
       type: "button", text: label, "aria-pressed": String(market === key),
@@ -147,7 +147,7 @@ function renderGenel(root) {
     { h: "Reddedilen", num: true, v: (b) => Object.values(b.rejected).reduce((a, c) => a + c, 0) },
   ];
   root.replaceChildren(marketFilter(), el("div", { class: "summary" }, hero, tiles), chart.node,
-    card("Kasalar", "Her kaynak CEX ve DEX'te ayrı 100 $ ile başlar, sonuçlar birbirine karışmaz.", table(columns, books, "Kasa yok.")));
+    card("Kasalar", "Her kaynak Binance'te ayrı 100 $ sanal bakiye ile başlar, sonuçlar birbirine karışmaz.", table(columns, books, "Kasa yok.")));
   if (chart.fresh) renderChart();
 }
 
@@ -446,7 +446,7 @@ function renderSistem(root) {
   const v = state.venues;
   const uptime = duration(state.generated_at - state.started_at);
   const facts = el("p", { class: "note", text:
-    `Çalışma süresi: ${uptime}. CEX kasaları: ${v.cex || "erişilemiyor"}. DEX kasaları: ${v.dex}. Erişilen vadeli: ${v.perp.join(", ") || "yok"}. Erişilen spot: ${v.spot.join(", ") || "yok"}.` });
+    `Çalışma süresi: ${uptime}. Kasaların borsası: ${v.cex || "erişilemiyor"}. Erişilen vadeli: ${v.perp.join(", ") || "yok"}.` });
   const feeds = el("p", { class: "note", text: `Canlı akışlar: ${state.feeds.map((f) => `${f.alive ? "✓" : "⚠"} ${f.venue}: ${f.alive ? `${f.symbols} parite, son mesaj ${duration(f.last_message_age)} önce` : (f.last_error || "bağlı değil")}`).join("  ·  ") || "yok"}. Sunucu gecikmesi: ${n1.format(state.loop_lag_ms)} ms.` });
   const errors = state.errors.length
     ? el("div", { class: "banner", text: `⚠ Veri sorunu: ${state.errors.join("; ")}` })

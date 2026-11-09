@@ -75,7 +75,7 @@ def format_help() -> str:
         "🤖 Kaldıraç botu\n"
         f"{PAPER_NOTE}\n\n"
         "Ne yapar:\n"
-        "• Kaldıraç: 4 strateji, CEX ve DEX'te ayrı kasalarda\n"
+        "• Kaldıraç: 4 strateji, her biri Binance'te ayrı kasada\n"
         "• Haber: Haber olumluysa alır, olumsuzsa açığa satar\n"
         "• Yapay zeka masası: API anahtarı girilince çalışır\n\n"
         "Tüm ayrıntılar panelde. Burada sadece özet ve önemli uyarılar gelir.\n\n"
@@ -120,7 +120,7 @@ def desk_line(bot, now: float) -> str:
 def format_startup(bot) -> str:
     desk = "hazır" if bot.desk.enabled else f"kapalı ({bot.desk.disabled_reason})"
     return ("🟢 Bot başladı\n" + PAPER_NOTE + "\n"
-            f"CEX: {bot.cex_venue or 'erişilemiyor'} | DEX: {settings.DEX_VENUE}\n"
+            f"Borsa: {bot.cex_venue or 'erişilemiyor'}\n"
             f"Masa: {desk}\n" + panel_line())
 
 

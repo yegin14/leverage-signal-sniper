@@ -17,7 +17,7 @@ from aiohttp import web
 from . import reports, settings
 from .costs import PERP_VENUES, breakeven_winrate, round_trip_cost_pct, sign
 from .desk import Candidate, Desk
-from .feeds import BinanceFeed, HyperliquidFeed
+from .feeds import BinanceFeed
 from .news import NewsDesk
 from .paper import PaperBook, Plan, Quote
 from .signals import ema
@@ -129,9 +129,9 @@ class Bot:
     # ---------------------------------------------------------------- setup and persistence
 
     def _make_books(self, saved: Optional[dict]):
-        """One separate $100 book per signal source and market, so results never mix."""
+        """One separate $100 book per signal source on Binance, so results never mix (the Hyperliquid books were dropped)."""
         saved = saved or {}
-        venues = {"cex": self.cex_venue, "dex": settings.DEX_VENUE}
+        venues = {"cex": self.cex_venue}
         for source in SOURCE_LABELS:
             for kind, venue in venues.items():
                 if not venue:
@@ -674,7 +674,7 @@ class Bot:
         self.sample_curve()
 
     def start_feeds(self) -> List[asyncio.Task]:
-        for feed in (HyperliquidFeed(self.session, settings.SYMBOLS), BinanceFeed(self.session, settings.SYMBOLS)):
+        for feed in (BinanceFeed(self.session, settings.SYMBOLS),):
             self.market.attach_feed(feed)
         return [asyncio.create_task(f.run(), name=f"feed-{f.venue}") for f in self.market.feeds.values()]
 

@@ -124,7 +124,7 @@ def build_state(bot, now: float) -> dict:
         "mode": "paper",
         "started_at": bot.started_at,
         "panel_note": reports.PAPER_NOTE,
-        "venues": {"cex": bot.cex_venue, "dex": settings.DEX_VENUE, "perp": bot.perp_venues},
+        "venues": {"cex": bot.cex_venue, "perp": bot.perp_venues},
         "feeds": [f.status(now) for f in getattr(bot.market, "feeds", {}).values()],
         "loop_lag_ms": round(bot.loop_lag_ms, 1),
         "errors": bot.data_errors(now),
