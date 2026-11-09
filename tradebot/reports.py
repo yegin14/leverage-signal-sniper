@@ -70,23 +70,13 @@ def source_lines(bot) -> List[str]:
     return lines
 
 
-def arbitrage_line(bot) -> str:
-    kinds = bot.arb.state["kinds"].values()
-    trades = sum(k["trades"] for k in kinds)
-    net = sum(k["net_usd"] for k in kinds)
-    known = [k["best_net_bps"] for k in kinds if k["best_net_bps"] is not None]
-    best = f", en iyi net fırsat {max(known):+.1f} bps" if known else ""
-    return f"Arbitraj: {trades} işlem, net {money(net)}{best}"
-
-
 def format_help() -> str:
     return (
-        "🤖 Kaldıraç ve arbitraj botu\n"
+        "🤖 Kaldıraç botu\n"
         f"{PAPER_NOTE}\n\n"
         "Ne yapar:\n"
         "• Kaldıraç: 4 strateji, CEX ve DEX'te ayrı kasalarda\n"
         "• Haber: Haber olumluysa alır, olumsuzsa açığa satar\n"
-        "• Arbitraj: 5 türü ölçer, masraf sonrası kârlıysa işlem yapar\n"
         "• Yapay zeka masası: API anahtarı girilince çalışır\n\n"
         "Tüm ayrıntılar panelde. Burada sadece özet ve önemli uyarılar gelir.\n\n"
         "/durum özet\n/panel site adresi\n/sifirla kasaları sıfırla\n\n"
@@ -101,7 +91,7 @@ def format_status(bot, now: Optional[float] = None) -> str:
              f"Toplam net: {money(t['net'])} (açık pozisyonlar ve giderler dahil)",
              f"Açık pozisyon: {t['open']} | Kapanan işlem: {t['trades']}", ""]
     lines += source_lines(bot)
-    lines += ["", arbitrage_line(bot), desk_line(bot, now)]
+    lines += ["", desk_line(bot, now)]
     errors = bot.data_errors(now)
     if errors:
         lines += ["", "⚠️ Veri sorunu: " + "; ".join(errors)]
@@ -115,7 +105,7 @@ def format_digest(bot, now: Optional[float] = None) -> str:
     lines = [f"🕒 {settings.TELEGRAM_DIGEST_HOURS:g} saatlik özet (sahte para)",
              f"Toplam net: {money(t['net'])} | Açık {t['open']} | Kapanan {t['trades']}", ""]
     lines += source_lines(bot)
-    lines += ["", arbitrage_line(bot), panel_line()]
+    lines += ["", panel_line()]
     return "\n".join(lines)
 
 

@@ -13,7 +13,6 @@ from typing import Any
 from aiohttp import web
 
 from . import reports, settings
-from .arbitrage import KINDS
 from .costs import fee_usd, sign
 from .desk import has_credentials
 from .strategies import SOURCE_LABELS
@@ -125,7 +124,7 @@ def build_state(bot, now: float) -> dict:
         "mode": "paper",
         "started_at": bot.started_at,
         "panel_note": reports.PAPER_NOTE,
-        "venues": {"cex": bot.cex_venue, "dex": settings.DEX_VENUE, "perp": bot.perp_venues, "spot": bot.spot_venues},
+        "venues": {"cex": bot.cex_venue, "dex": settings.DEX_VENUE, "perp": bot.perp_venues},
         "feeds": [f.status(now) for f in getattr(bot.market, "feeds", {}).values()],
         "loop_lag_ms": round(bot.loop_lag_ms, 1),
         "errors": bot.data_errors(now),
@@ -135,15 +134,6 @@ def build_state(bot, now: float) -> dict:
         "positions": positions,
         "trades": trades[:MAX_TRADES],
         "trades_total": len(trades),
-        "arbitrage": {
-            "notional": settings.ARB_NOTIONAL_USD,
-            "capital": settings.ARB_CAPITAL_USD,
-            "min_net_bps": settings.ARB_MIN_NET_BPS,
-            "started_at": bot.arb.state["started_at"],
-            "kinds": [{**{k: v for k, v in bot.arb.state["kinds"][key].items() if k != "history"},
-                       "key": key, "label": label, "history": bot.arb.state["kinds"][key]["history"][-20:]}
-                      for key, label in KINDS.items()],
-        },
         "news": {
             "last_fetch": bot.news.last_fetch,
             "feeds": bot.news.feed_status,
@@ -218,15 +208,12 @@ def make_app(bot) -> web.Application:
         return web.json_response({
             "ok": True, "mode": "paper", "uptime_hours": round((now - bot.started_at) / 3600.0, 2),
             "cex": bot.cex_venue, "dex": settings.DEX_VENUE, "errors": bot.data_errors(now),
-            "reachable": {"perp": bot.perp_venues, "spot": bot.spot_venues},
+            "reachable": {"perp": bot.perp_venues},
             "feeds": [f.status(now) for f in getattr(bot.market, "feeds", {}).values()],
             "loop_lag_ms": round(bot.loop_lag_ms, 1),
             "books": sanitize({k: {x: b.stats()[x] for x in ("balance", "equity", "trades", "net", "open")}
                                for k, b in bot.books.items()}),
             "news_items": len(bot.news.items),
-            "arbitrage": sanitize({k: {"scans": v["scans"], "net_bps": v["last_net_bps"], "trades": v["trades"],
-                                       "unavailable": v.get("unavailable")}
-                                   for k, v in bot.arb.state["kinds"].items()}),
         })
 
     app = web.Application(middlewares=[security_headers])

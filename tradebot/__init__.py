@@ -1,1 +1,1 @@
-"""Paper-first multi-strategy crypto bot: leverage, arbitrage, news and a debating agent desk."""
+"""Paper-first leverage bot: trend, funding and signal strategies, news trades and a debating agent desk."""

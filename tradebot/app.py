@@ -1,4 +1,4 @@
-"""Runs everything: strategies, positions, news trades, desk, arbitrage, panel and persistence."""
+"""Runs everything: leverage strategies, positions, news trades, desk, panel and persistence."""
 
 import asyncio
 import json
@@ -15,7 +15,6 @@ import numpy as np
 from aiohttp import web
 
 from . import reports, settings
-from .arbitrage import ArbLedger, ArbScanner
 from .costs import PERP_VENUES, breakeven_winrate, round_trip_cost_pct, sign
 from .desk import Candidate, Desk
 from .feeds import BinanceFeed, HyperliquidFeed
@@ -112,8 +111,6 @@ class Bot:
         self.books: Dict[str, PaperBook] = {}
         self.news = NewsDesk()
         self.desk = desk or Desk()
-        self.arb = ArbLedger()
-        self.scanner: Optional[ArbScanner] = None
         self.telegram = Telegram(session, self)
         self.seen_bars: Dict[str, float] = {}
         self.news_cooldown: Dict[str, float] = {}
@@ -125,7 +122,6 @@ class Bot:
         self.loop_errors: Dict[str, dict] = {}
         self.backup_dirty = False
         self.perp_venues: List[str] = []
-        self.spot_venues: List[str] = []
         self.events: List[dict] = []
         self.curve: List[dict] = []
         self.loop_lag_ms = 0.0
@@ -152,7 +148,7 @@ class Bot:
         return {
             "version": STATE_VERSION, "saved_at": time.time(),
             "books": {k: b.state for k, b in self.books.items()},
-            "news": self.news.to_state(), "desk": self.desk.state, "arb": self.arb.state,
+            "news": self.news.to_state(), "desk": self.desk.state,
             "seen_bars": self.seen_bars, "news_cooldown": self.news_cooldown,
             "events": self.events, "curve": self.curve,
         }
@@ -192,20 +188,15 @@ class Bot:
             self.news = NewsDesk(saved.get("news"))
             if saved.get("desk"):
                 self.desk.state = saved["desk"]
-            if saved.get("arb"):
-                self.arb = ArbLedger(saved["arb"])
             self.seen_bars = saved.get("seen_bars", {})
             self.news_cooldown = saved.get("news_cooldown", {})
             self.events = saved.get("events", [])
             self.curve = saved.get("curve", [])
-        self.scanner = ArbScanner(self.market, self.session, self.arb, [], [])
         await self.refresh_reachability()
 
     async def refresh_reachability(self):
         """A shared server IP can be blocked and released at any time, so this is asked again."""
         self.perp_venues = [v for v in ("binance", "bybit") if await self._reachable(v)]
-        self.spot_venues = [v for v in ("binance", "bybit") if await self._spot_reachable(v)]
-        self.scanner.set_venues(self.perp_venues, self.spot_venues)
 
     async def _reachable(self, venue: str) -> bool:
         try:
@@ -214,17 +205,9 @@ class Bot:
         except DataError:
             return False
 
-    async def _spot_reachable(self, venue: str) -> bool:
-        try:
-            await self.market.spot_book(venue, "BTCUSDT", 5)
-            return True
-        except DataError:
-            return False
-
     def reset_paper(self):
         for book in self.books.values():
             book.reset()
-        self.arb.reset()
         self.curve = []
         self.log("sistem", "Sahte kasalar ve ölçümler sıfırlandı")
 
@@ -654,27 +637,6 @@ class Bot:
                 logger.exception("Desk session failed")
                 self.log("uyarı", f"Masa oturumu hata verdi ({type(e).__name__}), işlem açılmadı")
 
-    async def _arb_perp_step(self):
-        await self.scanner.scan_perps(settings.ARB_SYMBOLS)
-        await self.scanner.scan_spot()
-        self._flush_arb_events()
-
-    async def _arb_dex_step(self):
-        await self.scanner.scan_dex()
-        self._flush_arb_events()
-
-    def _flush_arb_events(self):
-        events, self.scanner.events = self.scanner.events, []
-        for event in events:
-            if event["type"] == "arb_open":
-                p = event["pair"]
-                self.log("arbitraj", f"{p['symbol']} açıldı: {p['long_at']} long, {p['short_at']} short, "
-                                     f"beklenen net {event['op'].net_bps:+.1f} bps")
-            else:
-                t = event["trade"]
-                self.log("arbitraj", f"{t['symbol']}: {t['buy_at']} al, {t['sell_at']} sat, net {t['net']:+.3f}$")
-            self.backup_dirty = True
-
     async def _persist_step(self):
         self.save_local()
 
@@ -749,8 +711,6 @@ class Bot:
             self._forever("strateji", STRATEGY_POLL_SECONDS, self.scan_strategies),
             self._forever("pozisyon", POSITION_POLL_SECONDS, self.update_positions),
             self._forever("haber", NEWS_POLL_SECONDS, self._news_step),
-            self._forever("arbitraj", settings.ARB_SCAN_SECONDS, self._arb_perp_step),
-            self._forever("dex", settings.ARB_DEX_SCAN_SECONDS, self._arb_dex_step),
             self._forever("kayıt", PERSIST_SECONDS, self._persist_step),
             self._forever("grafik", CURVE_SAMPLE_SECONDS, self._curve_step),
             self._forever("uyanık", KEEP_AWAKE_SECONDS, self._keep_awake_step),

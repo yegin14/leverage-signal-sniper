@@ -98,7 +98,7 @@ class Telegram:
         if command == "panel":
             return reports.panel_line()
         if command == "reset_ask":
-            return ("⚠️ Bu komut tüm sahte kasaları, işlem geçmişini ve arbitraj ölçümlerini siler. Yapay zeka harcama "
+            return ("⚠️ Bu komut tüm sahte kasaları ve işlem geçmişini siler. Yapay zeka harcama "
                     "kaydı silinmez. Onay için yazın: /sifirla onay")
         if command == "reset_do":
             bot.reset_paper()

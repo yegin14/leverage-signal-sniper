@@ -12,7 +12,7 @@ const STALE_QUOTE_SECONDS = 90;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const TABS = [
-  ["genel", "Genel"], ["pozisyonlar", "Pozisyonlar"], ["islemler", "İşlemler"], ["arbitraj", "Arbitraj"],
+  ["genel", "Genel"], ["pozisyonlar", "Pozisyonlar"], ["islemler", "İşlemler"],
   ["haberler", "Haberler"], ["masa", "Masa"], ["giderler", "Giderler"], ["sistem", "Sistem"],
 ];
 
@@ -359,44 +359,6 @@ function renderIslemler(root) {
     table(columns, rows, "Henüz kapanan işlem yok.")));
 }
 
-// ---------------------------------------------------------------- Arbitraj
-
-function renderArbitraj(root) {
-  const a = state.arbitrage;
-  const hours = (Date.now() / 1000 - a.started_at) / 3600;
-  const status = (k) => {
-    if (k.unavailable) return el("span", { class: "warn-cell", text: `⚠ ${k.unavailable}` });
-    if (k.last_error) return el("span", { class: "warn-cell", text: `⚠ ${k.last_error.detail}` });
-    return k.last_pair || "";
-  };
-  const columns = [
-    { h: "Tür", v: (k) => k.label },
-    { h: "Şu an brüt", num: true, v: (k) => bps(k.last_gross_bps) },
-    { h: "Şu an net", num: true, v: (k) => bps(k.last_net_bps), cls: (k) => signClass(k.last_net_bps) },
-    { h: "En iyi net", num: true, v: (k) => bps(k.best_net_bps), cls: (k) => signClass(k.best_net_bps) },
-    { h: "Tarama", num: true, v: (k) => k.scans },
-    { h: "Kârlı tarama", num: true, v: (k) => k.positive },
-    { h: "İşlem", num: true, v: (k) => k.trades },
-    { h: "Net", num: true, v: (k) => money(k.net_usd), cls: (k) => signClass(k.net_usd) },
-    { h: "Son tarama", num: true, v: (k) => ago(k.last_scan_at) },
-    { h: "Şu anki en iyi çift", wrap: true, v: status },
-  ];
-  const history = a.kinds.flatMap((k) => k.history.map((t) => ({ ...t, label: k.label }))).sort((x, y) => y.at - x.at);
-  const historyColumns = [
-    { h: "Zaman", v: (t) => when(t.at) }, { h: "Tür", v: (t) => t.label }, { h: "Çift", v: (t) => t.symbol },
-    { h: "Alış", v: (t) => t.buy_at }, { h: "Satış", v: (t) => t.sell_at },
-    { h: "Net", num: true, v: (t) => money(t.net), cls: (t) => signClass(t.net) },
-    { h: "Brüt", num: true, v: (t) => money(t.gross) }, { h: "Komisyon", num: true, v: (t) => plain(t.fees, n3) },
-    { h: "Gaz ve transfer", num: true, v: (t) => plain(t.other, n3) },
-  ];
-  root.replaceChildren(
-    card("Arbitraj ölçümü",
-      `${n1.format(hours)} saattir ölçülüyor, işlem başına ${n2.format(a.notional)} $. bps: yüzde 0,01. ` +
-      `Net, tüm komisyon, gaz ve tahmini transfer ücretinden sonradır. Net ${n1.format(a.min_net_bps)} bps altındayken işlem açılmaz, çünkü o işlem baştan zarardır.`,
-      table(columns, a.kinds, "Veri yok.")),
-    card("Arbitraj işlemleri", null, table(historyColumns, history, "Henüz masraf sonrası kârlı bir fırsat çıkmadı.")));
-}
-
 // ---------------------------------------------------------------- Haberler
 
 function actionText(item) {
@@ -440,7 +402,7 @@ function renderMasa(root) {
   const facts = el("p", { class: "note", text:
     `Durum: ${statusText}. Model: ${d.model}. Bugün ${d.sessions_today} oturum, ${n3.format(d.spent_today)} $ / ${n2.format(d.budget_usd)} $ bütçe. ` +
     `Toplam ${d.sessions_total} oturum, ${n3.format(d.spent_total)} $. Bu harcama gerçek paradır, sahte değildir.` });
-  const hint = d.has_key ? null : el("p", { class: "banner", text: "Masa kapalı çünkü API anahtarı girilmedi. Render ayarlarına ANTHROPIC_API_KEY eklenince kendiliğinden başlar. Kaldıraç, haber ve arbitraj bölümleri anahtarsız çalışır." });
+  const hint = d.has_key ? null : el("p", { class: "banner", text: "Masa kapalı çünkü API anahtarı girilmedi. Render ayarlarına ANTHROPIC_API_KEY eklenince kendiliğinden başlar. Kaldıraç ve haber bölümleri anahtarsız çalışır." });
   const sessions = d.sessions.length ? d.sessions.map((s) => {
     const details = el("details", { class: "session", open: openSessions.has(s.id) ? "open" : null,
       ontoggle: (e) => { if (e.target.open) openSessions.add(s.id); else openSessions.delete(s.id); } },
@@ -470,13 +432,10 @@ function renderGiderler(root) {
     { h: "Tasfiye", num: true, v: (b) => b.liquidations },
   ];
   const d = state.desk;
-  const arbFees = state.arbitrage.kinds.reduce((sum, k) => sum + k.fees_usd, 0);
-  const arbOther = state.arbitrage.kinds.reduce((sum, k) => sum + k.other_usd, 0);
   root.replaceChildren(marketFilter(),
     card("Kaldıraç kasalarının giderleri", "*Kayma fiyatların içindedir, netten ayrıca düşülmez. Pozitif fonlama ödendi, negatif fonlama alındı demektir.", table(columns, books, "Veri yok.")),
     card("Diğer giderler", null,
-      el("p", { class: "note", text: `Yapay zeka masası (gerçek para): ${d.calls} çağrı, ${d.input_tokens.toLocaleString("tr-TR")} giriş ve ${d.output_tokens.toLocaleString("tr-TR")} çıkış tokeni, toplam ${n3.format(d.spent_total)} $.` }),
-      el("p", { class: "note", text: `Arbitraj: komisyon ${n3.format(arbFees)} $, gaz ve transfer ${n3.format(arbOther)} $.` })),
+      el("p", { class: "note", text: `Yapay zeka masası (gerçek para): ${d.calls} çağrı, ${d.input_tokens.toLocaleString("tr-TR")} giriş ve ${d.output_tokens.toLocaleString("tr-TR")} çıkış tokeni, toplam ${n3.format(d.spent_total)} $.` })),
     card("Sahte işlem kuralları", null, el("p", { class: "note", text:
       `Her işlemde en çok ${n2.format(state.limits.risk_per_trade_usd)} $ risk, en çok ${state.limits.max_leverage}x kaldıraç, izole teminat. Tasfiye fiyatı stoptan en az iki kat uzakta tutulur. Giriş ve stop gerçek tahtadan, kötü taraftan dolar. Hedef limit emirdir, fiyat içinden geçmeden dolmaz. Mum hem stopa hem hedefe değerse stop sayılır. Deneme sürecinde işlem sayısı sınırı yoktur. Aynı kasada bir paritede tek pozisyon açılır, teminat bitince yeni işlem açılmaz.` })));
 }
@@ -508,7 +467,7 @@ function renderSistem(root) {
 
 // ---------------------------------------------------------------- shell
 
-const RENDERERS = { genel: renderGenel, pozisyonlar: renderPozisyonlar, islemler: renderIslemler, arbitraj: renderArbitraj,
+const RENDERERS = { genel: renderGenel, pozisyonlar: renderPozisyonlar, islemler: renderIslemler,
   haberler: renderHaberler, masa: renderMasa, giderler: renderGiderler, sistem: renderSistem };
 
 function renderTabs() {

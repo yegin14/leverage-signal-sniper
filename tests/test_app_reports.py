@@ -288,16 +288,13 @@ async def test_signals_survive_a_blocked_venue(tmp_path):
     assert asked == ["binance", "bybit"]
 
 
-async def test_reachability_is_asked_again_and_reaches_the_scanner(tmp_path):
-    from tradebot.arbitrage import ArbScanner
+async def test_reachability_is_asked_again(tmp_path):
     bot = make_bot(tmp_path)
-    bot.scanner = ArbScanner(bot.market, None, bot.arb, [], [])
-    bot.market.spot_book = bot.market.book
     await bot.refresh_reachability()
-    assert bot.scanner.cex_venues == ("binance", "bybit")
+    assert bot.perp_venues == ["binance", "bybit"]
     bot.market.fail = True
     await bot.refresh_reachability()
-    assert bot.scanner.cex_venues == () and bot.perp_venues == []
+    assert bot.perp_venues == []
 
 
 def test_rest_limit_is_hidden_while_the_live_feed_works_and_a_dead_feed_is_reported(tmp_path):
@@ -877,8 +874,8 @@ async def test_state_shows_news_with_its_action_and_desk_reason(panel, monkeypat
     [item] = state["news"]["items"]
     assert item["sentiment"] == 1
     assert set(item["actions"][0]["opened"]) == {"binance", "hyperliquid"}
-    assert "desk" in state and "arbitrage" in state and "evidence" in state
-    assert len(state["arbitrage"]["kinds"]) == 5
+    assert "desk" in state and "evidence" in state
+    assert "arbitrage" not in state
 
 
 async def test_curve_endpoint_gives_points_and_book_identity(panel):
