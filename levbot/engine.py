@@ -125,6 +125,7 @@ class Engine:
             b = loaded.get(trade["symbol"])
             if b is not None and BY_KEY[trade["strategy"]].bar_hours == hours:
                 await self._manage(trade, b, now)
+        signals = scanned = 0
         for s in strategies:
             for symbol, b in loaded.items():
                 if b is None:
@@ -134,10 +135,16 @@ class Engine:
                 if self.state["last_bar"].get(key, 0) >= bar_ts:
                     continue
                 self.state["last_bar"][key] = bar_ts
+                scanned += 1
                 sig = latest_signal(s, b)
                 if not sig:
                     continue
+                signals += 1
                 await self._consider(s, b, sig[0], sig[1], now)
+        if scanned:
+            missing = sum(b is None for b in loaded.values())
+            self.log("tarama", f"{interval} mumları: {len(loaded) - missing} parite, {len(strategies)} strateji tarandı, "
+                               f"{signals} sinyal" + (f", {missing} paritenin verisi okunamadı" if missing else ""))
         self.errors.pop("tarama", None)
 
     async def _consider(self, s, b, direction: str, signal_atr: float, now: float):
